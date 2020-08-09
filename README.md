@@ -27,7 +27,7 @@ Make sure to have the UART link up and the cabling right (if using an TTL-USB ad
 Run the splitter using:
 
 ```sh
-$ protocol splitter #TODO add options
+$ protocol_splitter #TODO add options
 ```
 
 At the same time, the `protocol_splitter` should also be run in the client side, so the stream can be multiplexed bidirectionally.
