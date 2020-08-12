@@ -410,64 +410,61 @@ ssize_t Mavlink2Dev::read()
 	ret = _read_buffer->read(_uart_fd);
 
 	if (ret < 0) {
-		goto end;
+		return ret;
 	}
 
 	ret = 0;
 
-	if (_read_buffer->buf_size < 3) {
-		goto end;
-	}
-
 	// Search for a mavlink packet on buffer to send it
 	i = 0;
 
-	while ((unsigned)i < (_read_buffer->buf_size - 3)
-	       && _read_buffer->buffer[i] != 253
-	       && _read_buffer->buffer[i] != 254) {
-		i++;
-	}
-
-	// We need at least the first three bytes to get packet len
-	if ((unsigned)i >= _read_buffer->buf_size - 3) {
-		goto end;
-	}
-
-	if (_read_buffer->buffer[i] == 253) {
-		uint8_t payload_len = _read_buffer->buffer[i + 1];
-		uint8_t incompat_flags = _read_buffer->buffer[i + 2];
-		packet_len = payload_len + 12;
-
-		if (incompat_flags & 0x1) { //signing
-			packet_len += 13;
+	while (_read_buffer->buf_size > 3) {
+		while ((unsigned)i < (_read_buffer->buf_size - 3)
+		       && _read_buffer->buffer[i] != 253
+		       && _read_buffer->buffer[i] != 254) {
+			i++;
 		}
 
-	} else {
-		packet_len = _read_buffer->buffer[i + 1] + 8;
+		// We need at least the first three bytes to get packet len
+		if ((unsigned)i >= _read_buffer->buf_size - 3) {
+			break;
+		}
+
+		if (_read_buffer->buffer[i] == 253) {
+			uint8_t payload_len = _read_buffer->buffer[i + 1];
+			uint8_t incompat_flags = _read_buffer->buffer[i + 2];
+			packet_len = payload_len + 12;
+
+			if (incompat_flags & 0x1) { //signing
+				packet_len += 13;
+			}
+
+		} else {
+			packet_len = _read_buffer->buffer[i + 1] + 8;
+		}
+
+		// packet is bigger than what we've read, better luck next time
+		if ((unsigned)i + packet_len > _read_buffer->buf_size) {
+			break;
+		}
+
+		/* if buffer doesn't fit message, send what's possible and copy remaining
+		 * data into a temporary buffer on this class */
+		if (packet_len > buflen) {
+			_read_buffer->move(buffer, i, buflen);
+			_read_buffer->move(_partial_buffer, i, packet_len - buflen);
+			_remaining_partial = packet_len - buflen;
+			ret = buflen;
+			break;
+		}
+
+		_read_buffer->move(buffer, i, packet_len);
+		ret = packet_len;
+
+		// Write to UDP port
+		udp_write(buffer, packet_len);
 	}
 
-	// packet is bigger than what we've read, better luck next time
-	if ((unsigned)i + packet_len > _read_buffer->buf_size) {
-		goto end;
-	}
-
-	/* if buffer doesn't fit message, send what's possible and copy remaining
-	 * data into a temporary buffer on this class */
-	if (packet_len > buflen) {
-		_read_buffer->move(buffer, i, buflen);
-		_read_buffer->move(_partial_buffer, i, packet_len - buflen);
-		_remaining_partial = packet_len - buflen;
-		ret = buflen;
-		goto end;
-	}
-
-	_read_buffer->move(buffer, i, packet_len);
-	ret = packet_len;
-
-	// Write to UDP port
-	udp_write(buffer, packet_len);
-
-end:
 	return ret;
 }
 
@@ -480,17 +477,16 @@ ssize_t Mavlink2Dev::write()
 	 * - packet header is written all at once (or at least it contains the payload length)
 	 * - a single write call does not contain multiple (or parts of multiple) packets
 	 */
-	ssize_t ret = 0;
 
 	char buffer[BUFFER_SIZE];
 	size_t buflen = sizeof(buffer);
 
 	// Read from UDP port
-	udp_read((void *)buffer, buflen);
+	ssize_t ret = udp_read((void *)buffer, buflen);
 
 	switch (_parser_state) {
 	case ParserState::Idle:
-		assert(buflen >= 3);
+		assert(ret >= 3);
 
 		if ((unsigned char)buffer[0] == 253) {
 			uint8_t payload_len = buffer[1];
@@ -549,52 +545,48 @@ ssize_t RtpsDev::read()
 
 	ret = _read_buffer->read(_uart_fd);
 
-	if (ret <= 0) {
-		goto end;
+	if (ret < 0) {
+		return ret;
 	}
 
 	ret = 0;
 
-	if (_read_buffer->buf_size < HEADER_SIZE) {
-		goto end;        // starting ">>>" + topic + seq + lenhigh + lenlow + crchigh + crclow
-	}
-
 	// Search for a rtps packet on buffer to send it
 	i = 0;
 
-	while ((unsigned)i < (_read_buffer->buf_size - HEADER_SIZE) && (memcmp(_read_buffer->buffer + i, ">>>", 3) != 0)) {
-		i++;
+	while (_read_buffer->buf_size > HEADER_SIZE) {
+		while ((unsigned)i < (_read_buffer->buf_size - HEADER_SIZE) && (memcmp(_read_buffer->buffer + i, ">>>", 3) != 0)) {
+			i++;
+		}
+
+		// We need at least the first six bytes to get packet len
+		if ((unsigned)i > _read_buffer->buf_size - HEADER_SIZE) {
+			ret = -1;
+			break;
+		}
+
+		payload_len = ((uint16_t)_read_buffer->buffer[i + 5] << 8) | _read_buffer->buffer[i + 6];
+		packet_len = payload_len + HEADER_SIZE;
+
+		// packet is bigger than what we've read, better luck next time
+		if ((unsigned)i + packet_len > _read_buffer->buf_size) {
+			ret = -EMSGSIZE;
+			break;
+		}
+
+		// we do not have a complete message yet
+		if ((unsigned)i + payload_len + HEADER_SIZE > _read_buffer->buf_size) {
+			break;
+		}
+
+		_read_buffer->move(buffer, i, packet_len);
+
+		// Write to UDP port
+		udp_write(buffer, packet_len);
+
+		ret = packet_len;
 	}
 
-	// We need at least the first six bytes to get packet len
-	if ((unsigned)i > _read_buffer->buf_size - HEADER_SIZE) {
-		ret = -1;
-		goto end;
-	}
-
-	payload_len = ((uint16_t)_read_buffer->buffer[i + 5] << 8) | _read_buffer->buffer[i + 6];
-	packet_len = payload_len + HEADER_SIZE;
-
-	// packet is bigger than what we've read, better luck next time
-	if ((unsigned)i + packet_len > _read_buffer->buf_size) {
-		ret = -EMSGSIZE;
-		goto end;
-	}
-
-	// we do not have a complete message yet
-	if ((unsigned)i + payload_len + HEADER_SIZE > _read_buffer->buf_size) {
-		ret = 0;
-		goto end;
-	}
-
-	_read_buffer->move(buffer, i, packet_len);
-
-	// Write to UDP port
-	udp_write(buffer, packet_len);
-
-	ret = packet_len;
-
-end:
 	return ret;
 }
 
@@ -607,18 +599,18 @@ ssize_t RtpsDev::write()
 	 * - packet header is written all at once (or at least it contains the payload length)
 	 * - a single write call does not contain multiple (or parts of multiple) packets
 	 */
-	ssize_t ret = 0;
 	uint16_t payload_len;
 
 	char buffer[BUFFER_SIZE];
 	size_t buflen = sizeof(buffer);
 
 	// Read from UDP port
-	udp_read((void *)buffer, buflen);
+	// Read from UDP port
+	ssize_t ret = udp_read((void *)buffer, buflen);
 
 	switch (_parser_state) {
 	case ParserState::Idle:
-		assert(buflen >= HEADER_SIZE);
+		assert(ret >= HEADER_SIZE);
 
 		if (memcmp(buffer, ">>>", 3) != 0) {
 			printf("\033[1;33m[ protocol__splitter ]\tParser error\033[0m\n");
@@ -688,8 +680,8 @@ int main(int argc, char *argv[])
 		int ret = ::poll(fds, sizeof(fds) / sizeof(fds[0]), 100);
 
 		if (ret > 0 && (fds[0].revents & POLLIN)) {
-			objects->rtps->read();
 			objects->mavlink2->read();
+			objects->rtps->read();
 		}
 
 		if (ret > 0 && (fds[1].revents & POLLIN)) {
