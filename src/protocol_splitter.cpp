@@ -416,8 +416,6 @@ ssize_t Mavlink2Dev::read()
 		if (_remaining_partial == 0) {
 			_partial_start = 0;
 		}
-
-		return len;
 	}
 
 	ret = _in_read_buffer->read(_uart_fd);
@@ -473,12 +471,13 @@ ssize_t Mavlink2Dev::read()
 		}
 
 		_in_read_buffer->move(buffer, i, packet_len);
-		i = 0;
-
-		ret = packet_len;
 
 		// Write to UDP port
-		udp_write(buffer, packet_len);
+		udp_write(buffer, buflen);
+
+		ret += packet_len;
+
+		i = 0;
 	}
 
 	guard.unlock();
@@ -494,6 +493,10 @@ ssize_t Mavlink2Dev::write()
 	size_t buflen = sizeof(buffer);
 
 	int i = 0;
+
+	if (_out_read_buffer->buf_size > _out_read_buffer->BUFFER_THRESHOLD) {
+		_out_read_buffer->buf_size = 0;
+	}
 
 	// Read from UDP port
 	ssize_t ret = udp_read((void *)(_out_read_buffer->buffer + _out_read_buffer->buf_size),
@@ -570,6 +573,7 @@ ssize_t Mavlink2Dev::write()
 			}
 
 			_out_read_buffer->move(buffer, i, _packet_len);
+
 			i = 0;
 		}
 
@@ -609,6 +613,7 @@ ssize_t RtpsDev::read()
 	uint16_t packet_len, payload_len;
 
 	char buffer[BUFFER_SIZE];
+	size_t buflen = sizeof(buffer);
 
 	ret = _in_read_buffer->read(_uart_fd);
 
@@ -629,6 +634,9 @@ ssize_t RtpsDev::read()
 
 		// We need at least the first six bytes to get packet len
 		if ((unsigned)i > _in_read_buffer->buf_size - HEADER_SIZE) {
+			_in_read_buffer->move(_in_read_buffer->buffer, (size_t)(_in_read_buffer->buffer + i), _in_read_buffer->buf_size - (unsigned)i);
+			_in_read_buffer->buf_size -= (unsigned)i;
+			ret = -1;
 			break;
 		}
 
@@ -640,19 +648,31 @@ ssize_t RtpsDev::read()
 			break;
 		}
 
-		// we do not have a complete message yet
-		if ((unsigned)i + payload_len + HEADER_SIZE > _in_read_buffer->buf_size) {
+		// The message won't fit the buffer.
+		if (packet_len > buflen) {
+			_in_read_buffer->move(_in_read_buffer->buffer, (size_t)(_in_read_buffer->buffer + i + 1), _in_read_buffer->buf_size - (unsigned)(i + 1));
+			_in_read_buffer->buf_size -= (unsigned)(i + 1);
 			ret = -EMSGSIZE;
 			break;
 		}
 
+		// we do not have a complete message yet
+		if ((unsigned)i + payload_len + HEADER_SIZE > _in_read_buffer->buf_size) {
+			if (i > 0) {
+				_in_read_buffer->move(_in_read_buffer->buffer, (size_t)(_in_read_buffer->buffer + i), _in_read_buffer->buf_size - (unsigned)i);
+				_in_read_buffer->buf_size -= (unsigned)i;
+			}
+			break;
+		}
+
 		_in_read_buffer->move(buffer, i, packet_len);
-		i = 0;
 
 		// Write to UDP port
-		udp_write(buffer, packet_len);
+		udp_write(buffer, buflen);
 
-		ret = packet_len;
+		ret += packet_len;
+
+		i = 0;
 	}
 
 	guard.unlock();
@@ -670,6 +690,10 @@ ssize_t RtpsDev::write()
 
 	char buffer[BUFFER_SIZE];
 	size_t buflen = sizeof(buffer);
+
+	if (_out_read_buffer->buf_size > _out_read_buffer->BUFFER_THRESHOLD) {
+		_out_read_buffer->buf_size = 0;
+	}
 
 	// Read from UDP port
 	ssize_t ret = udp_read((void *)(_out_read_buffer->buffer + _out_read_buffer->buf_size),
@@ -691,6 +715,9 @@ ssize_t RtpsDev::write()
 
 			// We need at least the first six bytes to get packet len
 			if ((unsigned)i > _out_read_buffer->buf_size - HEADER_SIZE) {
+				_out_read_buffer->move(_out_read_buffer->buffer, (size_t)(_out_read_buffer->buffer + i), _out_read_buffer->buf_size - (unsigned)i);
+				_out_read_buffer->buf_size -= (unsigned)i;
+				ret = -1;
 				break;
 			}
 
@@ -702,13 +729,25 @@ ssize_t RtpsDev::write()
 				break;
 			}
 
-			// we do not have a complete message yet
-			if ((unsigned)i + payload_len + HEADER_SIZE > _out_read_buffer->buf_size) {
+			// The message won't fit the buffer.
+			if (_packet_len > buflen) {
+				_out_read_buffer->move(_out_read_buffer->buffer, (size_t)(_out_read_buffer->buffer + i + 1), _out_read_buffer->buf_size - (unsigned)(i + 1));
+				_out_read_buffer->buf_size -= (unsigned)(i + 1);
 				ret = -EMSGSIZE;
 				break;
 			}
 
+			// we do not have a complete message yet
+			if ((unsigned)i + payload_len + HEADER_SIZE > _out_read_buffer->buf_size) {
+				if (i > 0) {
+					_out_read_buffer->move(_out_read_buffer->buffer, (size_t)(_out_read_buffer->buffer + i), _out_read_buffer->buf_size - (unsigned)i);
+					_out_read_buffer->buf_size -= (unsigned)i;
+				}
+				break;
+			}
+
 			_out_read_buffer->move(buffer, i, _packet_len);
+
 			i = 0;
 		}
 
@@ -826,10 +865,10 @@ int main(int argc, char *argv[])
 
 	running = true;
 
-	std::thread mavlink_serial_to_udp_th(mavlink_serial_to_udp, fd_uart);
 	std::thread rtps_serial_to_udp_th(rtps_serial_to_udp, fd_uart);
-	std::thread mavlink_udp_to_serial_th(mavlink_udp_to_serial, fds_udp_mavlink);
+	std::thread mavlink_serial_to_udp_th(mavlink_serial_to_udp, fd_uart);
 	std::thread rtps_udp_to_serial_th(rtps_udp_to_serial, fds_udp_rtps);
+	std::thread mavlink_udp_to_serial_th(mavlink_udp_to_serial, fds_udp_mavlink);
 
 	mavlink_serial_to_udp_th.join();
 	rtps_serial_to_udp_th.join();
