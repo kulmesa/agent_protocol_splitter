@@ -41,6 +41,8 @@ project(agent_protocol_splitter VERSION 0.1.0)
 
 set(CMAKE_INSTALL_PREFIX "/usr/local/bin")
 
+find_package(Threads REQUIRED)
+
 # Set C++14
 include(CheckCXXCompilerFlag)
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_COMPILER_IS_CLANG OR
@@ -56,6 +58,7 @@ endif()
 include_directories(include)
 
 add_executable(protocol_splitter src/protocol_splitter.cpp)
+target_link_libraries(protocol_splitter PRIVATE Threads::Threads)
 
 # Install to '/usr/local/bin' if `make install` is used
 install(TARGETS protocol_splitter DESTINATION ${CMAKE_INSTALL_PREFIX})

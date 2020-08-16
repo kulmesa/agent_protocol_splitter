@@ -30,134 +30,139 @@
  *
  ****************************************************************************/
 
- #include <arpa/inet.h>
- #include <cassert>
- #include <csignal>
- #include <errno.h>
- #include <fcntl.h>
- #include <poll.h>
- #include <stdio.h>
- #include <string.h>
- #include <sys/socket.h>
- #include <termios.h>
- #include <unistd.h>
+#include <arpa/inet.h>
+#include <cassert>
+#include <csignal>
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <termios.h>
+#include <unistd.h>
 
- #define BUFFER_SIZE 2048
+#define BUFFER_SIZE 2048
 
- class DevSerial;
- class Mavlink2Dev;
- class RtpsDev;
- class ReadBuffer;
+class DevSerial;
+class Mavlink2Dev;
+class RtpsDev;
+class ReadBuffer;
 
- struct StaticData {
- 	DevSerial *serial;
- 	Mavlink2Dev *mavlink2;
- 	RtpsDev *rtps;
- 	ReadBuffer *read_buffer;
- };
+struct StaticData {
+	DevSerial *serial;
+	Mavlink2Dev *mavlink2;
+	RtpsDev *rtps;
+	ReadBuffer *in_read_buffer;
+	ReadBuffer *out_read_buffer;
+};
 
- volatile sig_atomic_t running = true;
+volatile sig_atomic_t running = true;
 
- namespace
- {
- static StaticData *objects = nullptr;
- }
+namespace
+{
+static StaticData *objects = nullptr;
+}
 
- class ReadBuffer
- {
- public:
- 	int read(int fd);
- 	void move(void *dest, size_t pos, size_t n);
+class ReadBuffer
+{
+public:
+	int read(int fd);
+	void move(void *dest, size_t pos, size_t n);
 
- 	uint8_t buffer[BUFFER_SIZE] = {};
- 	size_t buf_size = 0;
+	uint8_t buffer[BUFFER_SIZE] = {};
+	size_t buf_size = 0;
 
- 	static const size_t BUFFER_THRESHOLD = sizeof(buffer) * 0.8;
- };
+	static const size_t BUFFER_THRESHOLD = sizeof(buffer) * 0.8;
+};
 
- class DevSerial
- {
- public:
- 	DevSerial(const char* device_name, const uint32_t baudrate);
- 	virtual ~DevSerial();
+class DevSerial
+{
+public:
+	DevSerial(const char *device_name, const uint32_t baudrate);
+	virtual ~DevSerial();
 
- 	int	open_uart();
- 	int	close();
+	int	open_uart();
+	int	close();
 
- 	int _uart_fd = -1;
+	int _uart_fd = -1;
 
- protected:
- 	uint32_t _baudrate;
+protected:
+	uint32_t _baudrate;
 
- 	char _uart_name[64] = {};
- 	bool baudrate_to_speed(uint32_t bauds, speed_t *speed);
+	char _uart_name[64] = {};
+	bool baudrate_to_speed(uint32_t bauds, speed_t *speed);
 
- private:
- };
+private:
+};
 
- class DevSocket
- {
- public:
- 	DevSocket(const char* _udp_ip, const uint16_t udp_port_recv,
- 			  const uint16_t udp_port_send, int uart_fd);
- 	virtual ~DevSocket();
+class DevSocket
+{
+public:
+	DevSocket(const char *_udp_ip, const uint16_t udp_port_recv,
+		  const uint16_t udp_port_send, int uart_fd);
+	virtual ~DevSocket();
 
- 	int close(int udp_fd);
+	int close(int udp_fd);
 
- 	int	open_udp();
- 	ssize_t udp_read(void *buffer, size_t len);
- 	ssize_t udp_write(void *buffer, size_t len);
+	int	open_udp();
+	ssize_t udp_read(void *buffer, size_t len);
+	ssize_t udp_write(void *buffer, size_t len);
 
- 	int _uart_fd;
- 	int _udp_fd;
+	int _uart_fd;
+	int _udp_fd;
 
- protected:
- 	char _udp_ip[16] = {};
+protected:
+	char _udp_ip[16] = {};
 
- 	uint16_t _udp_port_recv;
- 	uint16_t _udp_port_send;
- 	struct sockaddr_in _outaddr;
- 	struct sockaddr_in _inaddr;
+	uint16_t _udp_port_recv;
+	uint16_t _udp_port_send;
+	struct sockaddr_in _outaddr;
+	struct sockaddr_in _inaddr;
 
- 	uint16_t _packet_len;
- 	enum class ParserState : uint8_t {
- 		Idle = 0,
- 		GotLength
- 	};
- 	ParserState _parser_state = ParserState::Idle;
+	uint16_t _packet_len;
+	enum class ParserState : uint8_t {
+		Idle = 0,
+		GotLength
+	};
+	ParserState _parser_state = ParserState::Idle;
 
- private:
- };
+private:
+};
 
- class Mavlink2Dev : public DevSocket
- {
- public:
- 	Mavlink2Dev(ReadBuffer *read_buffer, const char* udp_ip, const uint16_t udp_port_recv,
- 				const uint16_t udp_port_send, int uart_fd);
- 	virtual ~Mavlink2Dev() {}
+class Mavlink2Dev : public DevSocket
+{
+public:
+	Mavlink2Dev(ReadBuffer *in_read_buffer, ReadBuffer *out_read_buffer,
+		    const char *udp_ip, const uint16_t udp_port_recv,
+		    const uint16_t udp_port_send, int uart_fd);
+	virtual ~Mavlink2Dev() {}
 
- 	ssize_t	read();
- 	ssize_t	write();
+	ssize_t	read();
+	ssize_t	write();
 
- protected:
- 	ReadBuffer *_read_buffer;
- 	size_t _remaining_partial = 0;
- 	size_t _partial_start = 0;
- 	uint8_t _partial_buffer[BUFFER_SIZE] = {};
- };
+protected:
+	ReadBuffer *_in_read_buffer;
+	ReadBuffer *_out_read_buffer;
+	size_t _remaining_partial = 0;
+	size_t _partial_start = 0;
+	uint8_t _partial_buffer[1024] = {};
+};
 
- class RtpsDev : public DevSocket
- {
- public:
- 	RtpsDev(ReadBuffer *read_buffer, const char* udp_ip, const uint16_t udp_port_recv,
- 			const uint16_t udp_port_send, int uart_fd);
- 	virtual ~RtpsDev() {}
+class RtpsDev : public DevSocket
+{
+public:
+	RtpsDev(ReadBuffer *in_read_buffer, ReadBuffer *out_read_buffer,
+		const char *udp_ip, const uint16_t udp_port_recv,
+		const uint16_t udp_port_send, int uart_fd);
+	virtual ~RtpsDev() {}
 
- 	ssize_t	read();
- 	ssize_t	write();
+	ssize_t	read();
+	ssize_t	write();
 
- protected:
- 	ReadBuffer *_read_buffer;
+protected:
+	ReadBuffer *_in_read_buffer;
+	ReadBuffer *_out_read_buffer;
 
- 	static const uint8_t HEADER_SIZE = 9;
- };
+	static const uint8_t HEADER_SIZE = 9;
+};

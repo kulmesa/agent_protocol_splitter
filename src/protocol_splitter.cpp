@@ -32,6 +32,12 @@
 
 #include <protocol_splitter.hpp>
 
+#include <atomic>
+#include <thread>
+#include <mutex>
+
+std::mutex mtx;
+
 int ReadBuffer::read(int fd)
 {
 	/* Discard whole buffer if it's filled beyond a threshold,
@@ -63,7 +69,7 @@ void ReadBuffer::move(void *dest, size_t pos, size_t n)
 	buf_size -= n;
 }
 
-DevSerial::DevSerial(const char* device_name, const uint32_t baudrate)
+DevSerial::DevSerial(const char *device_name, const uint32_t baudrate)
 	: _baudrate(baudrate)
 {
 	strncpy(_uart_name, device_name, sizeof(_uart_name));
@@ -99,7 +105,8 @@ int DevSerial::open_uart()
 		// Back up the original uart configuration to restore it after exit
 		if ((termios_state = tcgetattr(_uart_fd, &uart_config)) < 0) {
 			int errno_bkp = errno;
-			printf("\033[0;31m[ protocol__splitter ]\tSerial link: Error getting config %s: %d (%d)\n\033[0m", _uart_name, termios_state, errno);
+			printf("\033[0;31m[ protocol__splitter ]\tSerial link: Error getting config %s: %d (%d)\n\033[0m", _uart_name,
+			       termios_state, errno);
 			close();
 			return -errno_bkp;
 		}
@@ -124,14 +131,15 @@ int DevSerial::open_uart()
 
 		if (!baudrate_to_speed(_baudrate, &speed)) {
 			printf("\033[0;31m[ protocol__splitter ]\tSerial link: Error setting baudrate %s: Unsupported baudrate: %d\n\tsupported examples:\n\t9600, 19200, 38400, 57600, 115200, 230400, 460800, 500000, 921600, 1000000\033[0m\n",
-				_uart_name, _baudrate);
+			       _uart_name, _baudrate);
 			close();
 			return -EINVAL;
 		}
 
 		if (cfsetispeed(&uart_config, speed) < 0 || cfsetospeed(&uart_config, speed) < 0) {
 			int errno_bkp = errno;
-			printf("\033[0;31m[ protocol__splitter ]\tSerial link: Error setting baudrate %s: %d (%d)\033[0m\n", _uart_name, termios_state, errno);
+			printf("\033[0;31m[ protocol__splitter ]\tSerial link: Error setting baudrate %s: %d (%d)\033[0m\n", _uart_name,
+			       termios_state, errno);
 			close();
 			return -errno_bkp;
 		}
@@ -144,7 +152,7 @@ int DevSerial::open_uart()
 		}
 
 		printf("[ protocol__splitter ]\tSerial link: device: %s; baudrate: %d; flow_control: %s\n",
-                     _uart_name, _baudrate, _sw_flow_control ? "SW enabled" : (_hw_flow_control ? "HW enabled" : "No"));
+		       _uart_name, _baudrate, _sw_flow_control ? "SW enabled" : (_hw_flow_control ? "HW enabled" : "No"));
 
 		char aux[64];
 		bool flush = false;
@@ -156,6 +164,7 @@ int DevSerial::open_uart()
 
 		if (flush) {
 			printf("[ protocol__splitter ]\tSerial link: Flush\n");
+
 		} else {
 			printf("[ protocol__splitter ]\tSerial link: No flush\n");
 		}
@@ -274,15 +283,15 @@ int DevSerial::close()
 	return 0;
 }
 
-DevSocket::DevSocket(const char* udp_ip, const uint16_t udp_port_recv,
-					 const uint16_t udp_port_send, int uart_fd)
+DevSocket::DevSocket(const char *udp_ip, const uint16_t udp_port_recv,
+		     const uint16_t udp_port_send, int uart_fd)
 	: _uart_fd(uart_fd)
 	, _udp_fd(-1)
 	, _udp_port_recv(udp_port_recv)
 	, _udp_port_send(udp_port_send)
 {
 	if (nullptr != udp_ip) {
-			strcpy(_udp_ip, udp_ip);
+		strcpy(_udp_ip, udp_ip);
 	}
 
 	open_udp();
@@ -325,6 +334,7 @@ int DevSocket::open_udp()
 		printf("\033[0;31m[ protocol__splitter ]\tUDP socket link: Bind failed\033[0m\n");
 		return -1;
 	}
+
 	printf("[ protocol__splitter ]\tUDP socket link: Connected to server!\n");
 
 	if (inet_aton(_udp_ip, &_outaddr.sin_addr) == 0) {
@@ -370,17 +380,20 @@ ssize_t DevSocket::udp_write(void *buffer, size_t len)
 	return ret;
 }
 
-Mavlink2Dev::Mavlink2Dev(ReadBuffer *read_buffer, const char* udp_ip,
-						 const uint16_t udp_port_recv,
-						 const uint16_t udp_port_send,
-						 int uart_fd)
+Mavlink2Dev::Mavlink2Dev(ReadBuffer *in_read_buffer, ReadBuffer *out_read_buffer, const char *udp_ip,
+			 const uint16_t udp_port_recv,
+			 const uint16_t udp_port_send,
+			 int uart_fd)
 	: DevSocket(udp_ip, udp_port_recv, udp_port_send, uart_fd)
-	, _read_buffer{read_buffer}
+	, _in_read_buffer{in_read_buffer}
+	, _out_read_buffer{out_read_buffer}
 {
 }
 
 ssize_t Mavlink2Dev::read()
 {
+	std::unique_lock<std::mutex> guard(mtx);
+
 	int i, ret;
 	uint16_t packet_len = 0;
 
@@ -407,7 +420,7 @@ ssize_t Mavlink2Dev::read()
 		return len;
 	}
 
-	ret = _read_buffer->read(_uart_fd);
+	ret = _in_read_buffer->read(_uart_fd);
 
 	if (ret < 0) {
 		return ret;
@@ -418,21 +431,21 @@ ssize_t Mavlink2Dev::read()
 	// Search for a mavlink packet on buffer to send it
 	i = 0;
 
-	while (_read_buffer->buf_size > 3) {
-		while ((unsigned)i < (_read_buffer->buf_size - 3)
-		       && _read_buffer->buffer[i] != 253
-		       && _read_buffer->buffer[i] != 254) {
+	while (_in_read_buffer->buf_size >= 3) {
+		while ((unsigned)i < (_in_read_buffer->buf_size - 3)
+		       && _in_read_buffer->buffer[i] != 253
+		       && _in_read_buffer->buffer[i] != 254) {
 			i++;
 		}
 
 		// We need at least the first three bytes to get packet len
-		if ((unsigned)i >= _read_buffer->buf_size - 3) {
+		if ((unsigned)i >= _in_read_buffer->buf_size - 3) {
 			break;
 		}
 
-		if (_read_buffer->buffer[i] == 253) {
-			uint8_t payload_len = _read_buffer->buffer[i + 1];
-			uint8_t incompat_flags = _read_buffer->buffer[i + 2];
+		if (_in_read_buffer->buffer[i] == 253) {
+			uint8_t payload_len = _in_read_buffer->buffer[i + 1];
+			uint8_t incompat_flags = _in_read_buffer->buffer[i + 2];
 			packet_len = payload_len + 12;
 
 			if (incompat_flags & 0x1) { //signing
@@ -440,110 +453,164 @@ ssize_t Mavlink2Dev::read()
 			}
 
 		} else {
-			packet_len = _read_buffer->buffer[i + 1] + 8;
+			packet_len = _in_read_buffer->buffer[i + 1] + 8;
 		}
 
 		// packet is bigger than what we've read, better luck next time
-		if ((unsigned)i + packet_len > _read_buffer->buf_size) {
+		if ((unsigned)i + packet_len > _in_read_buffer->buf_size) {
+			ret = -EMSGSIZE;
 			break;
 		}
 
 		/* if buffer doesn't fit message, send what's possible and copy remaining
 		 * data into a temporary buffer on this class */
 		if (packet_len > buflen) {
-			_read_buffer->move(buffer, i, buflen);
-			_read_buffer->move(_partial_buffer, i, packet_len - buflen);
+			_in_read_buffer->move(buffer, i, buflen);
+			_in_read_buffer->move(_partial_buffer, i, packet_len - buflen);
 			_remaining_partial = packet_len - buflen;
 			ret = buflen;
 			break;
 		}
 
-		_read_buffer->move(buffer, i, packet_len);
+		_in_read_buffer->move(buffer, i, packet_len);
+		i = 0;
+
 		ret = packet_len;
 
 		// Write to UDP port
 		udp_write(buffer, packet_len);
 	}
 
+	guard.unlock();
+
 	return ret;
 }
 
 ssize_t Mavlink2Dev::write()
 {
-	/*
-	 * we need to look into the data to make sure the output is locked for the duration
-	 * of a whole packet.
-	 * assumptions:
-	 * - packet header is written all at once (or at least it contains the payload length)
-	 * - a single write call does not contain multiple (or parts of multiple) packets
-	 */
+	std::unique_lock<std::mutex> guard(mtx);
 
 	char buffer[BUFFER_SIZE];
 	size_t buflen = sizeof(buffer);
 
+	int i = 0;
+
 	// Read from UDP port
-	ssize_t ret = udp_read((void *)buffer, buflen);
+	ssize_t ret = udp_read((void *)(_out_read_buffer->buffer + _out_read_buffer->buf_size),
+			       sizeof(_out_read_buffer->buffer) - _out_read_buffer->buf_size);
+
+	if (ret < 0) {
+		return ret;
+	}
+
+	_out_read_buffer->buf_size += ret;
+
+	size_t len = 0;
 
 	switch (_parser_state) {
 	case ParserState::Idle:
-		assert(ret >= 3);
 
-		if ((unsigned char)buffer[0] == 253) {
-			uint8_t payload_len = buffer[1];
-			uint8_t incompat_flags = buffer[2];
-			_packet_len = payload_len + 12;
+		/* last reading was partial (i.e., buffer didn't fit whole message),
+		 * so now we'll just send remaining bytes */
+		if (_remaining_partial > 0) {
+			len = _remaining_partial;
 
-			if (incompat_flags & 0x1) { //signing
-				_packet_len += 13;
+			if (buflen < len) {
+				len = buflen;
 			}
 
-			_parser_state = ParserState::GotLength;
+			memmove(buffer, _partial_buffer + _partial_start, len);
+			_partial_start += len;
+			_remaining_partial -= len;
 
-		} else if ((unsigned char)buffer[0] == 254) { // mavlink 1
-			uint8_t payload_len = buffer[1];
-			_packet_len = payload_len + 8;
-
-			_parser_state = ParserState::GotLength;
-
-		} else {
-			printf("\033[1;33m[ protocol__splitter ]\tParser error\033[0m\n");
-			return 0;
+			if (_remaining_partial == 0) {
+				_partial_start = 0;
+			}
 		}
+
+		while (_out_read_buffer->buf_size >= 3) {
+			while ((unsigned)i < (_out_read_buffer->buf_size - 3)
+			       && _out_read_buffer->buffer[i] != 253
+			       && _out_read_buffer->buffer[i] != 254) {
+				i++;
+			}
+
+			// We need at least the first three bytes to get packet len
+			if ((unsigned)i >= _out_read_buffer->buf_size - 3) {
+				break;
+			}
+
+			if (_out_read_buffer->buffer[i] == 253) {
+				uint8_t payload_len = _out_read_buffer->buffer[i + 1];
+				uint8_t incompat_flags = _out_read_buffer->buffer[i + 2];
+				_packet_len = payload_len + 12;
+
+				if (incompat_flags & 0x1) { //signing
+					_packet_len += 13;
+				}
+
+			} else {
+				_packet_len = _out_read_buffer->buffer[i + 1] + 8;
+			}
+
+			// packet is bigger than what we've read, better luck next time
+			if ((unsigned)i + _packet_len > _out_read_buffer->buf_size) {
+				ret = -EMSGSIZE;
+				break;
+			}
+
+			/* if buffer doesn't fit message, send what's possible and copy remaining
+			 * data into a temporary buffer on this class */
+			if (_packet_len > buflen) {
+				_out_read_buffer->move(buffer, i, buflen);
+				_out_read_buffer->move(_partial_buffer, i, _packet_len - buflen);
+				_remaining_partial = _packet_len - buflen;
+				ret = buflen;
+				break;
+			}
+
+			_out_read_buffer->move(buffer, i, _packet_len);
+			i = 0;
+		}
+
+		buflen = sizeof(buffer) + len;
+		_parser_state = ParserState::GotLength;
 
 	/* FALLTHROUGH */
 
 	case ParserState::GotLength: {
-			_packet_len -= buflen;
-
 			ret = ::write(_uart_fd, buffer, buflen);
-
-			if (_packet_len == 0) {
-				_parser_state = ParserState::Idle;
-			}
+			_parser_state = ParserState::Idle;
+			_packet_len = 0;
 		}
 
 		break;
 	}
 
+	guard.unlock();
+
 	return ret;
 }
 
-RtpsDev::RtpsDev(ReadBuffer *read_buffer, const char* udp_ip,
-				 const uint16_t udp_port_recv, const uint16_t udp_port_send,
-				 int uart_fd)
+RtpsDev::RtpsDev(ReadBuffer *in_read_buffer, ReadBuffer *out_read_buffer, const char *udp_ip,
+		 const uint16_t udp_port_recv, const uint16_t udp_port_send,
+		 int uart_fd)
 	: DevSocket(udp_ip, udp_port_recv, udp_port_send, uart_fd)
-	, _read_buffer{read_buffer}
+	, _in_read_buffer{in_read_buffer}
+	, _out_read_buffer{out_read_buffer}
 {
 }
 
 ssize_t RtpsDev::read()
 {
+	std::unique_lock<std::mutex> guard(mtx);
+
 	int i, ret;
 	uint16_t packet_len, payload_len;
 
 	char buffer[BUFFER_SIZE];
 
-	ret = _read_buffer->read(_uart_fd);
+	ret = _in_read_buffer->read(_uart_fd);
 
 	if (ret < 0) {
 		return ret;
@@ -554,32 +621,33 @@ ssize_t RtpsDev::read()
 	// Search for a rtps packet on buffer to send it
 	i = 0;
 
-	while (_read_buffer->buf_size > HEADER_SIZE) {
-		while ((unsigned)i < (_read_buffer->buf_size - HEADER_SIZE) && (memcmp(_read_buffer->buffer + i, ">>>", 3) != 0)) {
+	while (_in_read_buffer->buf_size >= HEADER_SIZE) {
+		while ((unsigned)i < (_in_read_buffer->buf_size - HEADER_SIZE)
+		       && (memcmp(_in_read_buffer->buffer + i, ">>>", 3) != 0)) {
 			i++;
 		}
 
 		// We need at least the first six bytes to get packet len
-		if ((unsigned)i > _read_buffer->buf_size - HEADER_SIZE) {
-			ret = -1;
+		if ((unsigned)i > _in_read_buffer->buf_size - HEADER_SIZE) {
 			break;
 		}
 
-		payload_len = ((uint16_t)_read_buffer->buffer[i + 5] << 8) | _read_buffer->buffer[i + 6];
+		payload_len = ((uint16_t)_in_read_buffer->buffer[i + 5] << 8) | _in_read_buffer->buffer[i + 6];
 		packet_len = payload_len + HEADER_SIZE;
 
 		// packet is bigger than what we've read, better luck next time
-		if ((unsigned)i + packet_len > _read_buffer->buf_size) {
-			ret = -EMSGSIZE;
+		if ((unsigned)i + packet_len > _in_read_buffer->buf_size) {
 			break;
 		}
 
 		// we do not have a complete message yet
-		if ((unsigned)i + payload_len + HEADER_SIZE > _read_buffer->buf_size) {
+		if ((unsigned)i + payload_len + HEADER_SIZE > _in_read_buffer->buf_size) {
+			ret = -EMSGSIZE;
 			break;
 		}
 
-		_read_buffer->move(buffer, i, packet_len);
+		_in_read_buffer->move(buffer, i, packet_len);
+		i = 0;
 
 		// Write to UDP port
 		udp_write(buffer, packet_len);
@@ -587,72 +655,133 @@ ssize_t RtpsDev::read()
 		ret = packet_len;
 	}
 
+	guard.unlock();
+
 	return ret;
 }
 
 ssize_t RtpsDev::write()
 {
-	/*
-	 * we need to look into the data to make sure the output is locked for the duration
-	 * of a whole packet.
-	 * assumptions:
-	 * - packet header is written all at once (or at least it contains the payload length)
-	 * - a single write call does not contain multiple (or parts of multiple) packets
-	 */
+	std::unique_lock<std::mutex> guard(mtx);
+
 	uint16_t payload_len;
+
+	int i = 0;
 
 	char buffer[BUFFER_SIZE];
 	size_t buflen = sizeof(buffer);
 
 	// Read from UDP port
-	// Read from UDP port
-	ssize_t ret = udp_read((void *)buffer, buflen);
+	ssize_t ret = udp_read((void *)(_out_read_buffer->buffer + _out_read_buffer->buf_size),
+			       sizeof(_out_read_buffer->buffer) - _out_read_buffer->buf_size);
+
+	if (ret < 0) {
+		return ret;
+	}
+
+	_out_read_buffer->buf_size += ret;
 
 	switch (_parser_state) {
 	case ParserState::Idle:
-		assert(ret >= HEADER_SIZE);
+		while (_out_read_buffer->buf_size >= HEADER_SIZE) {
+			while ((unsigned)i < (_out_read_buffer->buf_size - HEADER_SIZE)
+			       && (memcmp(_out_read_buffer->buffer + i, ">>>", 3) != 0)) {
+				i++;
+			}
 
-		if (memcmp(buffer, ">>>", 3) != 0) {
-			printf("\033[1;33m[ protocol__splitter ]\tParser error\033[0m\n");
-			return 0;
+			// We need at least the first six bytes to get packet len
+			if ((unsigned)i > _out_read_buffer->buf_size - HEADER_SIZE) {
+				break;
+			}
+
+			payload_len = ((uint16_t)_out_read_buffer->buffer[i + 5] << 8) | _out_read_buffer->buffer[i + 6];
+			_packet_len = payload_len + HEADER_SIZE;
+
+			// packet is bigger than what we've read, better luck next time
+			if ((unsigned)i + _packet_len > _out_read_buffer->buf_size) {
+				break;
+			}
+
+			// we do not have a complete message yet
+			if ((unsigned)i + payload_len + HEADER_SIZE > _out_read_buffer->buf_size) {
+				ret = -EMSGSIZE;
+				break;
+			}
+
+			_out_read_buffer->move(buffer, i, _packet_len);
+			i = 0;
 		}
 
-		payload_len = ((uint16_t)buffer[5] << 8) | buffer[6];
-		_packet_len = payload_len + HEADER_SIZE;
+		buflen = sizeof(buffer);
 		_parser_state = ParserState::GotLength;
 
 	/* FALLTHROUGH */
 
 	case ParserState::GotLength: {
-			_packet_len -= buflen;
-
 			ret = ::write(_uart_fd, buffer, buflen);
-
-			if (_packet_len == 0) {
-				_parser_state = ParserState::Idle;
-			}
+			_parser_state = ParserState::Idle;
+			_packet_len = 0;
 		}
 
 		break;
 	}
+
+	guard.unlock();
 
 	return ret;
 }
 
 void signal_handler(int signum)
 {
-   printf("\033[1;33m[ protocol__splitter ]\tInterrupt signal (%d) received.\033[0m\n", signum);
-   running = false;
+	printf("\033[1;33m[ protocol__splitter ]\tInterrupt signal (%d) received.\033[0m\n", signum);
+	running = false;
+}
+
+void mavlink_serial_to_udp(pollfd *fds)
+{
+	while (running) {
+		if ((::poll(fds, sizeof(fds) / sizeof(fds[0]), 100) > 0) && (fds[0].revents & POLLIN)) {
+			objects->mavlink2->read();
+		}
+	}
+}
+
+void rtps_serial_to_udp(pollfd *fds)
+{
+	while (running) {
+		if ((::poll(fds, sizeof(fds) / sizeof(fds[0]), 100) > 0) && (fds[0].revents & POLLIN)) {
+			objects->rtps->read();
+		}
+	}
+}
+
+void mavlink_udp_to_serial(pollfd *fds)
+{
+	while (running) {
+		if ((::poll(fds, sizeof(fds) / sizeof(fds[0]), 100) > 0) && (fds[0].revents & POLLIN)) {
+			objects->mavlink2->write();
+		}
+	}
+}
+
+void rtps_udp_to_serial(pollfd *fds)
+{
+	while (running) {
+		if ((::poll(fds, sizeof(fds) / sizeof(fds[0]), 100) > 0) && (fds[0].revents & POLLIN)) {
+			objects->rtps->write();
+		}
+	}
 }
 
 int main(int argc, char *argv[])
 {
 	objects = new StaticData();
 
-	signal(SIGINT, signal_handler);
+	std::signal(SIGINT, signal_handler);
 
 	// Init the read buffer
-	objects->read_buffer = new ReadBuffer();
+	objects->in_read_buffer = new ReadBuffer();
+	objects->out_read_buffer = new ReadBuffer();
 
 	// Init the serial device
 	// TODO: add arg options to set the dev name, baudrate, etc.
@@ -661,44 +790,59 @@ int main(int argc, char *argv[])
 
 	// Init UDP sockets for Mavlink and RTPS
 	// TODO: add arg options to set the UDP IP and ports
-	objects->mavlink2 = new Mavlink2Dev(objects->read_buffer, "127.0.0.1", 5800, 5801, uart_fd);
-	objects->rtps = new RtpsDev(objects->read_buffer, "127.0.0.1", 5900, 5901, uart_fd);
+	objects->mavlink2 = new Mavlink2Dev(objects->in_read_buffer, objects->out_read_buffer, "127.0.0.1", 5800, 5801,
+					    uart_fd);
+	objects->rtps = new RtpsDev(objects->in_read_buffer, objects->out_read_buffer, "127.0.0.1", 5900, 5901, uart_fd);
 
 	// Init fd polling
-	pollfd fds[3];
-	fds[0].fd = uart_fd;
-	fds[1].fd = objects->mavlink2->_udp_fd;
-	fds[2].fd = objects->rtps->_udp_fd;
+	// pollfd fds[3];
+	// fds[0].fd = uart_fd;
+	// fds[1].fd = objects->mavlink2->_udp_fd;
+	// fds[2].fd = objects->rtps->_udp_fd;
+	//
+	// for (size_t i = 0; i <= sizeof(fds) / sizeof(fds[0]); i++) {
+	// 	fds[i].events = POLLIN;
+	// }
+	//
+	// !stop_all = true;
+	//
+	// std::thread mavlink_serial_to_udp_th(mavlink_serial_to_udp, fds);
+	// std::thread rtps_serial_to_udp_th(rtps_serial_to_udp, fds);
+	// std::thread mavlink_udp_to_serial_th(mavlink_udp_to_serial, fds);
+	// std::thread rtps_udp_to_serial_th(mavlink_udp_to_serial, fds);
 
-	for (size_t i = 0; i <= sizeof(fds) / sizeof(fds[0]); i++) {
-		fds[i].events = POLLIN;
-	}
+	pollfd fd_uart[1];
+	pollfd fds_udp_mavlink[1];
+	pollfd fds_udp_rtps[1];
+
+	fd_uart[0].fd = uart_fd;
+	fd_uart[0].events = POLLIN;
+
+	fds_udp_mavlink[0].fd = objects->mavlink2->_udp_fd;
+	fds_udp_mavlink[0].events = POLLIN;
+
+	fds_udp_rtps[0].fd = objects->rtps->_udp_fd;
+	fds_udp_rtps[0].events = POLLIN;
 
 	running = true;
 
-	while (running) {
-		int ret = ::poll(fds, sizeof(fds) / sizeof(fds[0]), 100);
+	std::thread mavlink_serial_to_udp_th(mavlink_serial_to_udp, fd_uart);
+	std::thread rtps_serial_to_udp_th(rtps_serial_to_udp, fd_uart);
+	std::thread mavlink_udp_to_serial_th(mavlink_udp_to_serial, fds_udp_mavlink);
+	std::thread rtps_udp_to_serial_th(rtps_udp_to_serial, fds_udp_rtps);
 
-		if (ret > 0 && (fds[0].revents & POLLIN)) {
-			objects->mavlink2->read();
-			objects->rtps->read();
-		}
-
-		if (ret > 0 && (fds[1].revents & POLLIN)) {
-			objects->mavlink2->write();
-		}
-
-		if (ret > 0 && (fds[2].revents & POLLIN)) {
-			objects->rtps->write();
-		}
-	}
+	mavlink_serial_to_udp_th.join();
+	rtps_serial_to_udp_th.join();
+	mavlink_udp_to_serial_th.join();
+	rtps_udp_to_serial_th.join();
 
 	delete objects->serial;
-    delete objects->mavlink2;
-    delete objects->rtps;
-    delete objects->read_buffer;
-    delete objects;
-    objects = nullptr;
+	delete objects->mavlink2;
+	delete objects->rtps;
+	delete objects->in_read_buffer;
+	delete objects->out_read_buffer;
+	delete objects;
+	objects = nullptr;
 
 	return 0;
 }
