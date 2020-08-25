@@ -61,7 +61,8 @@ struct StaticData {
 	Mavlink2Dev *mavlink2;
 	RtpsDev *rtps;
 	ReadBuffer *in_read_buffer;
-	ReadBuffer *out_read_buffer;
+	ReadBuffer *mavlink_out_read_buffer;
+	ReadBuffer *rtps_out_read_buffer;
 };
 
 volatile sig_atomic_t running = true;
@@ -142,13 +143,6 @@ protected:
 	uint16_t _udp_port_send;
 	struct sockaddr_in _outaddr;
 	struct sockaddr_in _inaddr;
-
-	uint16_t _packet_len;
-	enum class ParserState : uint8_t {
-		Idle = 0,
-		GotLength
-	};
-	ParserState _parser_state = ParserState::Idle;
 
 private:
 };
