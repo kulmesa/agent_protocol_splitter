@@ -431,6 +431,7 @@ ssize_t Mavlink2Dev::read()
 	ret = _in_read_buffer->read(_uart_fd);
 
 	if (ret < 0) {
+		guard.unlock();
 		return ret;
 	}
 
@@ -614,6 +615,7 @@ ssize_t RtpsDev::read()
 	ret = _in_read_buffer->read(_uart_fd);
 
 	if (ret < 0) {
+		guard.unlock();
 		return ret;
 	}
 
@@ -676,8 +678,6 @@ ssize_t RtpsDev::write()
 	uint16_t payload_len;
 	uint16_t packet_len;
 
-	int i = 0;
-
 	char buffer[BUFFER_SIZE];
 	size_t buflen = sizeof(buffer);
 
@@ -690,50 +690,14 @@ ssize_t RtpsDev::write()
 			       sizeof(_out_read_buffer->buffer) - _out_read_buffer->buf_size);
 
 	if (ret < 0) {
+		guard.unlock();
 		return ret;
 	}
 
 	_out_read_buffer->buf_size += ret;
+	_out_read_buffer->move(buffer, 0, _out_read_buffer->buf_size);
 
-	while (_out_read_buffer->buf_size >= HEADER_SIZE) {
-		while ((unsigned)i < (_out_read_buffer->buf_size - HEADER_SIZE)
-		       && (memcmp(_out_read_buffer->buffer + i, ">>>", 3) != 0)) {
-			i++;
-		}
-
-		// We need at least the first six bytes to get packet len
-		if ((unsigned)i > _out_read_buffer->buf_size - HEADER_SIZE) {
-			_out_read_buffer->move(_out_read_buffer->buffer, (size_t)(_out_read_buffer->buffer + i),
-					       _out_read_buffer->buf_size - (unsigned)i);
-			_out_read_buffer->buf_size -= (unsigned)i;
-			ret = -1;
-			break;
-		}
-
-		payload_len = ((uint16_t)_out_read_buffer->buffer[i + 5] << 8) | _out_read_buffer->buffer[i + 6];
-		packet_len = payload_len + HEADER_SIZE;
-
-		// packet is bigger than what we've read, better luck next time
-		if ((unsigned)i + packet_len > _out_read_buffer->buf_size) {
-			break;
-		}
-
-		// The message won't fit the buffer.
-		if (packet_len > buflen) {
-			_out_read_buffer->move(_out_read_buffer->buffer, (size_t)(_out_read_buffer->buffer + i + 1),
-					       _out_read_buffer->buf_size - (unsigned)(i + 1));
-			_out_read_buffer->buf_size -= (unsigned)(i + 1);
-			ret = -EMSGSIZE;
-			break;
-		}
-
-		_out_read_buffer->move(buffer, i, packet_len);
-
-		i = 0;
-		buflen += sizeof(buffer);
-		ret = ::write(_uart_fd, buffer, buflen);
-	}
-
+	ret = ::write(_uart_fd, buffer, ret);
 	guard.unlock();
 
 	return ret;
