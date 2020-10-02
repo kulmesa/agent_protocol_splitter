@@ -1,0 +1,12 @@
+Source: agent-protocol-splitter
+Section: unknown
+Priority: optional
+Maintainer: Quentin Vecchio <quentin@auterion.com>
+Build-Depends:  debhelper (>= 11)
+Standards-Version: 4.4.1
+Homepage: https://github.com/Auterion/agent_protocol_splitter
+
+Package: agent-protocol-splitter
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: agent-protocol-splitter
