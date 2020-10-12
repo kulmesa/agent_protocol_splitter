@@ -39,7 +39,7 @@ endif (POLICY CMP0048)
 
 project(agent_protocol_splitter VERSION 0.1.0)
 
-set(CMAKE_INSTALL_PREFIX "/usr/local/bin")
+# set(CMAKE_INSTALL_PREFIX "/usr/local/bin")
 
 find_package(Threads REQUIRED)
 
@@ -61,4 +61,4 @@ add_executable(protocol_splitter src/protocol_splitter.cpp)
 target_link_libraries(protocol_splitter PRIVATE Threads::Threads)
 
 # Install to '/usr/local/bin' if `make install` is used
-install(TARGETS protocol_splitter DESTINATION ${CMAKE_INSTALL_PREFIX})
+install(TARGETS protocol_splitter RUNTIME DESTINATION bin)
