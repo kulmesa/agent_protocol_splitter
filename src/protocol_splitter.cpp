@@ -37,43 +37,125 @@
 
 
 /*********************************************************************
- * ReadBuffer
+ * ByteBuffer
  *********************************************************************/
 
-void ReadBuffer::prepare_fill()
+ByteBuffer::ByteBuffer()
+	: buffer(0)
+	, buffer_size(0)
+	, pos(0)
+	, len(0)
 {
-	if (buf_size > 0)
-	{
-		// Incomplete message header in the end. Need more data to parse
-		// Move existing data to the beginning of the buffer and read more
-		memmove(buffer, buffer+pos, buf_size);
-		pos = buf_size;
+
+}
+
+ByteBuffer::~ByteBuffer()
+{
+	if (buffer)
+		std::free(buffer);
+}
+
+size_t ByteBuffer::reserve(size_t n)
+{
+	if (buffer_size >= n) {
+		return buffer_size;
 	}
-	else
-	{
+	if (len > n) {
+		// Existing data does not fit to new buffer
+		return buffer_size;
+	}
+
+	uint8_t *old_buffer = buffer;
+	buffer = (uint8_t*) std::malloc(n);
+	if (buffer) {
+		if (len) {
+			memcpy(buffer, old_buffer+pos, len);
+		}
 		pos = 0;
-		buf_size = 0;
+		buffer_size = n;
 	}
-};
 
+	if (old_buffer)
+		std::free(old_buffer);
 
-void ReadBuffer::complete_fill(ssize_t len)
+	if (!buffer)
+	{
+		printf("  reserve: malloc failed: %p\n", buffer);
+		assert(0);
+	}
+
+	return buffer_size;
+}
+
+ssize_t ByteBuffer::push(void *dest, size_t n)
 {
-	if (len > 0)
-		buf_size += len;
+	ssize_t ret = reserve(pos+n);
+
+	if (ret < pos+n) {
+		return -1;
+	}
+
+	memcpy(buffer+pos, dest, n);
+	len += n;
+	return n;
+}
+
+ssize_t ByteBuffer::pop(void *dest, size_t n)
+{
+	assert(len >= n);
+	assert(pos+n <= buffer_size);
+	if (dest)
+		memcpy(dest, buffer+pos, n);
+	pos += n;
+	len -= n;
+	return n;
 }
 
 
-void ReadBuffer::fetch(void *dest, size_t n)
+UartByteBuffer::UartByteBuffer(size_t size)
+	: ByteBuffer()
 {
-	DEBUG_PRINT(("ReadBuffer::fetch: pos:%ld, n:%ld, buf_size: %ld\n", pos, n, buf_size));
-	assert(n <= buf_size);
-	assert(pos + n < BUFFER_SIZE);
+	reserve(size);
+}
 
-	if (dest)
-		memcpy(dest, buffer + pos, n); // fetch out desired data
-	pos += n;
-	buf_size -= n;
+ssize_t UartByteBuffer::fill()
+{
+	if (pos > BUFFER_FLUSH_THRESHOLD)
+	{
+		if (len > 0) {
+			memmove(buffer, buffer+pos, len);
+		}
+		pos = 0;
+	}
+	DEBUG_UART_TO_UDP_PRINT(("UartByteBuffer::fill pos:%ld, len=%ld, _uart_fd:%d\n", pos, len, _uart_fd));
+	ssize_t r = ::read(_uart_fd, write_point(), get_free() );
+	if (r > 0)
+		len += r;
+	return r;
+}
+
+
+UdpByteBuffer::UdpByteBuffer(size_t size)
+	: ByteBuffer()
+{
+	reserve(size);
+}
+
+ssize_t UdpByteBuffer::fill()
+{
+	if (pos > BUFFER_FLUSH_THRESHOLD)
+	{
+		if (len > 0) {
+			memmove(buffer, buffer+pos, len);
+		}
+		pos = 0;
+	}
+	DEBUG_UDP_TO_UART_PRINT(("udp fill: free %ld\n", get_free()));
+	static socklen_t addrlen = sizeof(_inaddr);
+	ssize_t r = recvfrom(_udp_fd, write_point(), get_free(), 0, (struct sockaddr *) &_inaddr, &addrlen);
+	if (r > 0)
+		len += r;
+	return r;
 }
 
 
@@ -83,11 +165,15 @@ void ReadBuffer::fetch(void *dest, size_t n)
 
 DevSerial::DevSerial(const char *device_name, const uint32_t baudrate, const bool hw_flow_control,
 		     const bool sw_flow_control)
-	: _baudrate(baudrate),
-	  _hw_flow_control(hw_flow_control),
-	  _sw_flow_control(sw_flow_control)
+	: _baudrate(baudrate)
+	, _hw_flow_control(hw_flow_control)
+	, _sw_flow_control(sw_flow_control)
+	, _uart_read_buffer(BUFFER_SIZE)
 {
 	strncpy(_uart_name, device_name, sizeof(_uart_name));
+	int fd = open_uart();
+	if (fd >= 0)
+		_uart_read_buffer.init(fd);
 }
 
 DevSerial::~DevSerial()
@@ -99,27 +185,23 @@ DevSerial::~DevSerial()
 
 ssize_t DevSerial::read()
 {
-	ssize_t r = 0;
-	_in_read_buffer.prepare_fill();
-	r = ::read(_uart_fd, _in_read_buffer.data(), _in_read_buffer.free_size() );
-	_in_read_buffer.complete_fill(r);
+	ssize_t r = _uart_read_buffer.fill();
+	DEBUG_UART_TO_UDP_PRINT(("DevSerial::read len:%ld\n", r));
 	if (r > 0)
-	{
 		parse();
-	}
 
 	return r;
 }
 
 ssize_t DevSerial::uart_write(std::vector<uint8_t> *vect)
 {
-	DEBUG_PRINT(("uart_write: _uart_fd %d\n", _uart_fd));
+	DEBUG_UDP_TO_UART_PRINT(("uart_write: _uart_fd %d\n", _uart_fd));
 	if (-1 == _uart_fd) {
 		return -1;
 	}
 
 	int ret = 0;
-	DEBUG_PRINT(("uart_write: len: %ld\n", vect->size()));
+	DEBUG_UDP_TO_UART_PRINT(("uart_write: len: %ld\n", vect->size()));
 	ret = ::write(_uart_fd, vect->data(), vect->size());
 	vect->clear();
 	return ret;
@@ -130,19 +212,19 @@ void DevSerial::parse()
 	bool need_more_data = false;
 	ssize_t mav_offset = STATUS_NOT_FOUND;
 	ssize_t rtps_offset = STATUS_NOT_FOUND;
-
-	while (_in_read_buffer.size() && !need_more_data) {
-		rtps_offset = objects->rtps->check_msgs(_in_read_buffer, objects->rtps->get_uart_msg_handler());
+	DEBUG_UART_TO_UDP_PRINT(("DevSerial::parse... size:%ld\n", _uart_read_buffer.size()));
+	while (_uart_read_buffer.size() && !need_more_data) {
+		rtps_offset = objects->rtps->check_msgs(_uart_read_buffer, objects->rtps->get_uart_msg_handler());
 		if (rtps_offset == STATUS_RECEIVING) {
 			// RtpsDev in middle of message receiving..
-			objects->rtps->send_msg(_in_read_buffer, objects->rtps->get_uart_msg_handler());
+			objects->rtps->send_msg(_uart_read_buffer, objects->rtps->get_uart_msg_handler());
 			continue;
 		}
 
-		mav_offset = objects->mavlink2->check_msgs(_in_read_buffer, objects->mavlink2->get_uart_msg_handler());
+		mav_offset = objects->mavlink2->check_msgs(_uart_read_buffer, objects->mavlink2->get_uart_msg_handler());
 		if (mav_offset == STATUS_RECEIVING) {
 			// Mavlink2Dev in middle of message receiving..
-			objects->mavlink2->send_msg(_in_read_buffer, objects->mavlink2->get_uart_msg_handler());
+			objects->mavlink2->send_msg(_uart_read_buffer, objects->mavlink2->get_uart_msg_handler());
 			continue;
 		}
 
@@ -158,7 +240,7 @@ void DevSerial::parse()
 			else
 			{
 				// Buffer contains only unknown data, Remove all
-				_in_read_buffer.empty();
+				_uart_read_buffer.clear();
 			}
 		}
 		else
@@ -170,40 +252,40 @@ void DevSerial::parse()
 				if (mav_offset < 0)
 				{
 					// No Mavlink messages -> Only RTPS messages found
-					objects->rtps->send_msg(_in_read_buffer, objects->rtps->get_uart_msg_handler());
+					objects->rtps->send_msg(_uart_read_buffer, objects->rtps->get_uart_msg_handler());
 				}
 				// Both RTPS and Mavlink messages found. Check which one is
 				// earlier in the buffer and read it out
 				else if (mav_offset < rtps_offset)
 				{
-					objects->mavlink2->send_msg(_in_read_buffer, objects->mavlink2->get_uart_msg_handler());
+					objects->mavlink2->send_msg(_uart_read_buffer, objects->mavlink2->get_uart_msg_handler());
 				}
 				else
 				{
-					objects->rtps->send_msg(_in_read_buffer, objects->rtps->get_uart_msg_handler());
+					objects->rtps->send_msg(_uart_read_buffer, objects->rtps->get_uart_msg_handler());
 				}
 			}
 			else if (mav_offset >=0)
 			{
 				// No RTPS messages, but only new Mavlink message(s)
-				objects->mavlink2->send_msg(_in_read_buffer, objects->mavlink2->get_uart_msg_handler());
+				objects->mavlink2->send_msg(_uart_read_buffer, objects->mavlink2->get_uart_msg_handler());
 			}
 		}
 
 	} // while
 }
 
-void DevSerial::send_msg(ReadBuffer &buffer, MessageData &msg)
+void DevSerial::send_msg(ByteBuffer &buffer, MessageData &msg)
 {
 	uint8_t *data = buffer.data();
-	DEBUG_PRINT(("UART: send_msg status: %ld\n", msg.status));
+	DEBUG_UDP_TO_UART_PRINT(("UART: send_msg status: %ld\n", msg.status));
 	if (msg.status == STATUS_RECEIVING)
 	{
 		size_t len = std::min(msg.remaining(), buffer.size());
-		DEBUG_PRINT(("  UART: send_msg RECEIVING - remaining bytes: %ld, buffer.size: %ld\n", msg.remaining(), buffer.size()));
-		buffer.fetch(msg.data(), len);
-		DEBUG_PRINT(("  UART: send_msg RECEIVING - remaining bytes after fetch: %ld\n", msg.remaining()));
+		DEBUG_UDP_TO_UART_PRINT(("  UART: send_msg RECEIVING - remaining bytes: %ld, buffer.size: %ld\n", msg.remaining(), buffer.size()));
+		buffer.pop(msg.data(), len);
 		msg.update_receiving(len);
+		DEBUG_UDP_TO_UART_PRINT(("  UART: send_msg RECEIVING - remaining bytes after pop: %ld, buffer.size after pop: %ld\n", msg.remaining(), buffer.size()));
 		if (!msg.remaining())
 		{
 			uart_write(&msg.buffer);
@@ -215,16 +297,16 @@ void DevSerial::send_msg(ReadBuffer &buffer, MessageData &msg)
 		if (msg.status > 0)
 		{
 			// Extra rubbish in the beginning, remove
-			buffer.fetch(nullptr, msg.status);
+			buffer.pop(nullptr, msg.status);
 			msg.status = 0;
 		}
-		DEBUG_PRINT(("  UART: send_msg -- packet_len: %ld\n", msg.packet_len));
+		DEBUG_UDP_TO_UART_PRINT(("  UART: send_msg -- packet_len: %ld\n", msg.packet_len));
 		assert(msg.packet_len);
 		size_t len = std::min(msg.remaining(), buffer.size());
-		DEBUG_PRINT(("  UART: send_msg remaining bytes: %ld, packet_len: %ld, buffer.size(): %ld\n", msg.remaining(), msg.packet_len, buffer.size()));
-		buffer.fetch(msg.data(), len);
+		DEBUG_UDP_TO_UART_PRINT(("  UART: send_msg remaining bytes: %ld, packet_len: %ld, buffer.size(): %ld\n", msg.remaining(), msg.packet_len, buffer.size()));
+		buffer.pop(msg.data(), len);
 		msg.update_receiving(len);
-		DEBUG_PRINT(("  UART: send_msg remaining after fetch: %ld, buffer.size(): %ld\n", msg.remaining(), buffer.size()));
+		DEBUG_UDP_TO_UART_PRINT(("  UART: send_msg remaining after fetch: %ld, buffer.size(): %ld\n", msg.remaining(), buffer.size()));
 		if (!msg.remaining()) {
 			uart_write(&msg.buffer);
 			msg.clear();
@@ -452,14 +534,16 @@ int DevSerial::close()
 DevSocket::DevSocket(const char *udp_ip,
                      const uint16_t udp_port_recv,
                      const uint16_t udp_port_send)
-	:_udp_port_recv(udp_port_recv)
-	,_udp_port_send(udp_port_send)
+	: _udp_port_recv(udp_port_recv)
+	, _udp_port_send(udp_port_send)
+	, _udp_read_buffer(BUFFER_SIZE)
 {
 	if (nullptr != udp_ip) {
 		strcpy(_udp_ip, udp_ip);
 	}
 
-	open_udp();
+	if (!open_udp())
+		_udp_read_buffer.init(_udp_fd, &_inaddr);
 }
 
 DevSocket::~DevSocket()
@@ -508,11 +592,9 @@ ssize_t DevSocket::udp_read()
 	if (-1 == _udp_fd) {
 		return -1;
 	}
-
 	static socklen_t addrlen = sizeof(_inaddr);
-	_udp_read_buffer.prepare_fill();
-	int r = recvfrom(_udp_fd, _udp_read_buffer.data(), _udp_read_buffer.free_size(), 0, (struct sockaddr *) &_inaddr, &addrlen);
-	_udp_read_buffer.complete_fill(r);
+	ssize_t r = _udp_read_buffer.fill();
+	DEBUG_UDP_TO_UART_PRINT(("udp_read %ld\n", r));
 	return r;
 }
 
@@ -522,21 +604,21 @@ ssize_t DevSocket::udp_write(std::vector<uint8_t> *vect)
 		return -1;
 	}
 
-	int ret = 0;
-	ret = sendto(_udp_fd, vect->data(), vect->size(), 0, (struct sockaddr *)&_outaddr, sizeof(_outaddr));
+	DEBUG_UART_TO_UDP_PRINT(("udp_write: size: %ld\n", vect->size()));
+	int ret = sendto(_udp_fd, vect->data(), vect->size(), 0, (struct sockaddr *)&_outaddr, sizeof(_outaddr));
 	vect->clear();
 	return ret;
 }
 
-void DevSocket::send_msg(ReadBuffer &buffer, MessageData &msg)
+void DevSocket::send_msg(ByteBuffer &buffer, MessageData &msg)
 {
 	uint8_t *data = buffer.data();
 	if (msg.status == STATUS_RECEIVING)
 	{
 		size_t len = std::min(msg.remaining(), buffer.size());
-		DEBUG_PRINT(("  UDP: send_msg RECEIVING - remaining bytes: %ld, buffer.size: %ld\n", msg.remaining(), buffer.size()));
-		buffer.fetch(msg.data(), len);
-		DEBUG_PRINT(("  UDP: send_msg -- RECEIVING -- emaining bytes after fetch: %ld\n", msg.remaining()));
+		DEBUG_UART_TO_UDP_PRINT(("  UDP: send_msg RECEIVING - remaining bytes: %ld, buffer.size: %ld\n", msg.remaining(), buffer.size()));
+		buffer.pop(msg.data(), len);
+		DEBUG_UART_TO_UDP_PRINT(("  UDP: send_msg -- RECEIVING -- emaining bytes after fetch: %ld\n", msg.remaining()));
 		msg.update_receiving(len);
 		if (!msg.remaining())
 		{
@@ -549,16 +631,16 @@ void DevSocket::send_msg(ReadBuffer &buffer, MessageData &msg)
 		if (msg.status > 0)
 		{
 			// Extra rubbish in the beginning, remove
-			buffer.fetch(nullptr, msg.status);
+			buffer.pop(nullptr, msg.status);
 			msg.status = 0;
 		}
-		DEBUG_PRINT(("  UDP: send_msg -- packet_len: %ld\n", msg.packet_len));
+		DEBUG_UART_TO_UDP_PRINT(("  UDP: send_msg -- packet_len: %ld\n", msg.packet_len));
 		assert(msg.packet_len);
 		size_t len = std::min(msg.remaining(), buffer.size());
-		DEBUG_PRINT(("  UDP: send_msg remaining bytes: %ld, packet_len: %ld, buffer.size(): %ld\n", msg.remaining(), msg.packet_len, buffer.size()));
-		buffer.fetch(msg.data(), len);
+		DEBUG_UART_TO_UDP_PRINT(("  UDP: send_msg remaining bytes: %ld, packet_len: %ld, buffer.size(): %ld\n", msg.remaining(), msg.packet_len, buffer.size()));
+		buffer.pop(msg.data(), len);
 		msg.update_receiving(len);
-		DEBUG_PRINT(("  UDP: send_msg remaining after fetch: %ld, buffer.size(): %ld\n", msg.remaining(), buffer.size()));
+		DEBUG_UART_TO_UDP_PRINT(("  UDP: send_msg remaining after fetch: %ld, buffer.size(): %ld\n", msg.remaining(), buffer.size()));
 		if (!msg.remaining()) {
 			udp_write(&msg.buffer);
 			msg.clear();
@@ -572,10 +654,10 @@ void DevSocket::parse()
 {
 	bool need_more_data = false;
 	ssize_t offset = STATUS_NOT_FOUND;
-	DEBUG_PRINT(("parse...\n"));
+	DEBUG_UDP_TO_UART_PRINT(("DevSocket::parse... size:%ld\n", _udp_read_buffer.size()));
 	while (_udp_read_buffer.size() && !need_more_data) {
 		offset = check_msgs(_udp_read_buffer, get_udp_msg_handler());
-		DEBUG_PRINT(("check_msgs: status: %ld\n", offset));
+		DEBUG_UDP_TO_UART_PRINT(("check_msgs: status: %ld\n", offset));
 		if (offset == STATUS_NEED_MORE_DATA)
 		{
 			// Not enough data to verify message. Request to keep remaining
@@ -585,11 +667,11 @@ void DevSocket::parse()
 		else if (offset == STATUS_NOT_FOUND)
 		{
 			// No messages found. Buffer contains only unknown data, Remove all
-			_udp_read_buffer.empty();
+			_udp_read_buffer.clear();
 		}
 		else
 		{
-			DEBUG_PRINT(("send_msg..\n"));
+			DEBUG_UDP_TO_UART_PRINT(("send_msg..\n"));
 			// Valid messages found, send to UART
 			objects->serial->send_msg(_udp_read_buffer, get_udp_msg_handler());
 		}
@@ -599,13 +681,9 @@ void DevSocket::parse()
 
 ssize_t DevSocket::read()
 {
-	ssize_t r = 0;
-	r = udp_read();
-	DEBUG_PRINT(("read udp: %ld bytes\n", r));
+	ssize_t r = udp_read();
 	if (r > 0)
-	{
 		parse();
-	}
 
 	return r;
 }
@@ -635,7 +713,7 @@ Mavlink2Dev::Mavlink2Dev(const char *udp_ip,
 	_uart_msg.clear();
 }
 
-ssize_t Mavlink2Dev::check_msgs(ReadBuffer &buffer, MessageData &msg)
+ssize_t Mavlink2Dev::check_msgs(ByteBuffer &buffer, MessageData &msg)
 {
 	uint8_t *data = buffer.data();
 	size_t size = buffer.size();
@@ -645,12 +723,11 @@ ssize_t Mavlink2Dev::check_msgs(ReadBuffer &buffer, MessageData &msg)
 		return msg.status;
 
 	msg.clear();
-	DEBUG_PRINT(("size = %lu\n", size));
 	for (size_t pos = 0; pos < size; pos++)
 	{
 		if (data[pos] == 254)
 		{
-			DEBUG_PRINT(("check_msgs: magic-254 found!\n"));
+			DEBUG_PRINT(("Mavlink2Dev::check_msgs: magic-254 found!\n"));
 			// Mavlink1 message
 			if (pos+3 >= size)
 			{
@@ -675,7 +752,8 @@ ssize_t Mavlink2Dev::check_msgs(ReadBuffer &buffer, MessageData &msg)
 			else
 			{
 				size_t packet_len = data[pos+1] + 12;
-				uint8_t incompat_flags = data[pos+4];
+				uint8_t incompat_flags = data[pos+2];
+				DEBUG_UDP_TO_UART_PRINT(("Mavlink2 seq: %d\n", data[pos+4]));
 				if (incompat_flags & 1) {
 					packet_len += 13;
 				}
@@ -702,7 +780,7 @@ RtpsDev::RtpsDev(const char *udp_ip,
 	_uart_msg.clear();
 }
 
-ssize_t RtpsDev::check_msgs(ReadBuffer &buffer, MessageData &msg)
+ssize_t RtpsDev::check_msgs(ByteBuffer &buffer, MessageData &msg)
 {
 	uint8_t *data = buffer.data();
 	size_t size = buffer.size();
@@ -750,7 +828,7 @@ void serial_receiver(pollfd *fds)
 {
 	while (running) {
 		if ((::poll(fds, sizeof(fds) / sizeof(fds[0]), 100) > 0) && (fds[0].revents & POLLIN)) {
-			DEBUG_PRINT(("serial_receiver\n"));
+			//DEBUG_UART_TO_UDP_PRINT(("serial_receiver\n"));
 			objects->serial->read();
 		}
 	}
@@ -760,7 +838,7 @@ void mavlink_udp_to_serial(pollfd *fds)
 {
 	while (running) {
 		if ((::poll(fds, sizeof(fds) / sizeof(fds[0]), 100) > 0) && (fds[0].revents & POLLIN)) {
-			DEBUG_PRINT(("mavlink_udp_to_serial\n"));
+			//DEBUG_UDP_TO_UART_PRINT(("mavlink_udp_to_serial\n"));
 			objects->mavlink2->read();
 		}
 	}
@@ -770,7 +848,7 @@ void rtps_udp_to_serial(pollfd *fds)
 {
 	while (running) {
 		if ((::poll(fds, sizeof(fds) / sizeof(fds[0]), 100) > 0) && (fds[0].revents & POLLIN)) {
-			DEBUG_PRINT(("rtps_udp_to_serial\n"));
+			//DEBUG_UDP_TO_UART_PRINT(("rtps_udp_to_serial\n"));
 			objects->rtps->read();
 		}
 	}
@@ -850,15 +928,11 @@ int main(int argc, char *argv[])
 	std::signal(SIGINT, signal_handler);
 
 	// Init the serial device
-	objects->serial = new DevSerial(_options.uart_device, _options.baudrate,
-									_options.hw_flow_control,
-									_options.sw_flow_control);
-
-	int uart_fd = objects->serial->open_uart();
-	if (uart_fd < 0)
-	{
-		return -2;
-	}
+	objects->serial = new DevSerial(
+		_options.uart_device,
+		_options.baudrate,
+		_options.hw_flow_control,
+		_options.sw_flow_control);
 
 	// Init UDP sockets for Mavlink and RTPS
 	objects->mavlink2 = new Mavlink2Dev(
@@ -876,7 +950,7 @@ int main(int argc, char *argv[])
 	pollfd fds_udp_mavlink[1]{};
 	pollfd fds_udp_rtps[1]{};
 
-	fd_uart[0].fd = uart_fd;
+	fd_uart[0].fd = objects->serial->get_fd();
 	fd_uart[0].events = POLLIN;
 
 	fds_udp_mavlink[0].fd = objects->mavlink2->get_fd();
