@@ -43,9 +43,9 @@ std::mutex mtx;
  * ReadBuffer
  *********************************************************************/
 
-void ReadBuffer::prepare_fill(int fd, bool need_more_data = false)
+void ReadBuffer::prepare_fill()
 {
-	if (need_more_data && buf_size > 0 && pos > 0)
+	if (buf_size > 0)
 	{
 		// Incomplete message header in the end. Need more data to parse
 		// Move existing data to the beginning of the buffer and read more
@@ -102,14 +102,13 @@ DevSerial::~DevSerial()
 
 ssize_t DevSerial::read()
 {
-	bool need_more_data = false;
 	ssize_t r = 0;
-	_in_read_buffer.prepare_fill(need_more_data);
+	_in_read_buffer.prepare_fill();
 	r = ::read(_uart_fd, _in_read_buffer.data(), _in_read_buffer.free_size() );
 	_in_read_buffer.complete_fill(r);
 	if (r > 0)
 	{
-		need_more_data = parse();
+		parse();
 	}
 
 	return r;
@@ -129,7 +128,7 @@ ssize_t DevSerial::uart_write(std::vector<uint8_t> *vect)
 	return ret;
 }
 
-bool DevSerial::parse()
+void DevSerial::parse()
 {
 	bool need_more_data = false;
 	ssize_t mav_offset = STATUS_NOT_FOUND;
@@ -195,7 +194,6 @@ bool DevSerial::parse()
 		}
 
 	} // while
-	return need_more_data;
 }
 
 void DevSerial::send_msg(ReadBuffer &buffer, MessageData &msg)
@@ -508,14 +506,14 @@ int DevSocket::open_udp()
 	return 0;
 }
 
-ssize_t DevSocket::udp_read(bool need_more_data)
+ssize_t DevSocket::udp_read()
 {
 	if (-1 == _udp_fd) {
 		return -1;
 	}
 
 	static socklen_t addrlen = sizeof(_inaddr);
-	_udp_read_buffer.prepare_fill(need_more_data);
+	_udp_read_buffer.prepare_fill();
 	int r = recvfrom(_udp_fd, _udp_read_buffer.data(), _udp_read_buffer.free_size(), 0, (struct sockaddr *) &_inaddr, &addrlen);
 	_udp_read_buffer.complete_fill(r);
 	return r;
@@ -573,7 +571,7 @@ void DevSocket::send_msg(ReadBuffer &buffer, MessageData &msg)
 	}
 }
 
-bool DevSocket::parse()
+void DevSocket::parse()
 {
 	bool need_more_data = false;
 	ssize_t offset = STATUS_NOT_FOUND;
@@ -600,18 +598,16 @@ bool DevSocket::parse()
 		}
 
 	} // while
-	return need_more_data;
 }
 
 ssize_t DevSocket::read()
 {
-	bool need_more_data = false;
 	ssize_t r = 0;
-	r = udp_read(need_more_data);
+	r = udp_read();
 	DEBUG_PRINT(("read udp: %ld bytes\n", r));
 	if (r > 0)
 	{
-		need_more_data = parse();
+		parse();
 	}
 
 	return r;

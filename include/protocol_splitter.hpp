@@ -109,7 +109,7 @@ static StaticData *objects = nullptr;
 class ReadBuffer
 {
 public:
-	void prepare_fill(int fd, bool need_more_data);
+	void prepare_fill();
 	void complete_fill(ssize_t len);
 	void fetch(void *dest, size_t n);
 	void empty() { pos = 0; buf_size = 0; }
@@ -193,7 +193,7 @@ protected:
 
 	ssize_t uart_write(std::vector<uint8_t> *vect);
 
-	bool parse();
+	void parse();
 	bool baudrate_to_speed(uint32_t bauds, speed_t *speed);
 	int close();
 private:
@@ -236,8 +236,8 @@ protected:
 	std::vector<uint8_t> *_msg_receive_buffer = nullptr;
 	size_t  _msg_receive_index = 0;
 
-	bool parse();
-	ssize_t udp_read(bool need_more_data);
+	void parse();
+	ssize_t udp_read();
 	ssize_t udp_write(std::vector<uint8_t> *vect);
 
 private:
