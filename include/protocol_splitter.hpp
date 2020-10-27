@@ -40,7 +40,6 @@
 #include <sys/socket.h>
 #include <termios.h>
 #include <unistd.h>
-#include <vector>
 
 //#define __DEBUG__
 
@@ -129,6 +128,7 @@ public:
 	virtual ~ByteBuffer();
 
 	size_t reserve(size_t n);
+	size_t resize(size_t n);
 	ssize_t push(void *dest, size_t n);
 	ssize_t pop(void *dest, size_t n);
 	void clear() { pos = 0; len = 0; }
@@ -174,8 +174,14 @@ private:
 class MessageData
 {
 public:
-	void set_packet_len(size_t len) {
+	MessageData()
+	{
+		buffer.reserve(1024);
+	}
+
+	void init_packet(size_t len) {
 		packet_len = len;
+		buffer.clear();
 		buffer.reserve(len);
 		buffer.resize(len);
 	}
@@ -207,7 +213,7 @@ public:
 
 	ssize_t status;
 	size_t  packet_len;
-	std::vector<uint8_t> buffer;
+	ByteBuffer buffer;
 	size_t  index;
 
 };
@@ -237,7 +243,7 @@ protected:
 	char _uart_name[64] = {};
 	UartByteBuffer _uart_read_buffer;
 
-	ssize_t uart_write(std::vector<uint8_t> *vect);
+	ssize_t uart_write(ByteBuffer *vect);
 
 	void parse();
 	bool baudrate_to_speed(uint32_t bauds, speed_t *speed);
@@ -279,12 +285,12 @@ protected:
 	ssize_t _msg_parse_status = STATUS_NOT_FOUND;
 	size_t  _msg_packet_len = 0;
 
-	std::vector<uint8_t> *_msg_receive_buffer = nullptr;
+	//ByteBuffer *_msg_receive_buffer = nullptr;
 	size_t  _msg_receive_index = 0;
 
 	void parse();
 	ssize_t udp_read();
-	ssize_t udp_write(std::vector<uint8_t> *vect);
+	ssize_t udp_write(ByteBuffer *vect);
 
 private:
 

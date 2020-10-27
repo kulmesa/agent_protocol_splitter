@@ -55,6 +55,13 @@ ByteBuffer::~ByteBuffer()
 		std::free(buffer);
 }
 
+size_t ByteBuffer::resize(size_t n)
+{
+	assert(pos+n <= buffer_size);
+	len = n;
+	return len;
+}
+
 size_t ByteBuffer::reserve(size_t n)
 {
 	if (buffer_size >= n) {
@@ -193,7 +200,7 @@ ssize_t DevSerial::read()
 	return r;
 }
 
-ssize_t DevSerial::uart_write(std::vector<uint8_t> *vect)
+ssize_t DevSerial::uart_write(ByteBuffer *vect)
 {
 	DEBUG_UDP_TO_UART_PRINT(("uart_write: _uart_fd %d\n", _uart_fd));
 	if (-1 == _uart_fd) {
@@ -598,7 +605,7 @@ ssize_t DevSocket::udp_read()
 	return r;
 }
 
-ssize_t DevSocket::udp_write(std::vector<uint8_t> *vect)
+ssize_t DevSocket::udp_write(ByteBuffer *vect)
 {
 	if (-1 == _udp_fd) {
 		return -1;
@@ -736,7 +743,7 @@ ssize_t Mavlink2Dev::check_msgs(ByteBuffer &buffer, MessageData &msg)
 			}
 			else
 			{
-				msg.set_packet_len(data[pos+1]+8);
+				msg.init_packet(data[pos+1]+8);
 				msg.status = pos;
 				break;
 			}
@@ -757,7 +764,7 @@ ssize_t Mavlink2Dev::check_msgs(ByteBuffer &buffer, MessageData &msg)
 				if (incompat_flags & 1) {
 					packet_len += 13;
 				}
-				msg.set_packet_len(packet_len);
+				msg.init_packet(packet_len);
 				msg.status = pos;
 				break;
 			}
@@ -804,7 +811,7 @@ ssize_t RtpsDev::check_msgs(ByteBuffer &buffer, MessageData &msg)
 			}
 			else if (data[pos+1] == '>' && data[pos+2] == '>')
 			{
-				msg.set_packet_len( (data[pos+5] << 8 | data[pos+6]) + 9);
+				msg.init_packet( (data[pos+5] << 8 | data[pos+6]) + 9);
 				msg.status = pos;
 				break;
 			}
