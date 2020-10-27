@@ -42,13 +42,12 @@
 #include <termios.h>
 #include <unistd.h>
 #include <list>
-#include <vector>
 #include <mutex>
 
 //#define __DEBUG__
 
 #define BUFFER_SIZE 2048
-#define MAX_UART_READ_BLOCK 1024
+#define BUFFER_FLUSH_THRESHOLD 1024
 #define DEFAULT_BAUDRATE 460800
 #define DEFAULT_UART_DEVICE "/dev/ttyUSB0"
 #define DEFAULT_HOST_IP "127.0.0.1"
@@ -59,15 +58,33 @@
 
 
 #ifdef __DEBUG__
+	#define __DEBUG_UART_TO_UDP__
+	#define __DEBUG_UDP_TO_UART__
+	#define __DEBUG_COMMON__
+#endif
+
+#ifdef __DEBUG_COMMON__
 	#define DEBUG_PRINT(pargs)    printf pargs
 #else
 	#define DEBUG_PRINT(pargs)
 #endif
 
+#ifdef __DEBUG_UART_TO_UDP__
+	#define DEBUG_UART_TO_UDP_PRINT(pargs)    printf pargs
+#else
+	#define DEBUG_UART_TO_UDP_PRINT(pargs)
+#endif
+#ifdef __DEBUG_UDP_TO_UART__
+	#define DEBUG_UDP_TO_UART_PRINT(pargs)    printf pargs
+#else
+	#define DEBUG_UDP_TO_UART_PRINT(pargs)
+#endif
+
+
 class DevSerial;
 class Mavlink2Dev;
 class RtpsDev;
-class ReadBuffer;
+class ByteBuffer;
 
 struct StaticData {
 	DevSerial *serial;
@@ -106,31 +123,68 @@ static StaticData *objects = nullptr;
 
 }
 
-class ReadBuffer
+
+class ByteBuffer
 {
 public:
-	void prepare_fill();
-	void complete_fill(ssize_t len);
-	void fetch(void *dest, size_t n);
-	void empty() { pos = 0; buf_size = 0; }
-	size_t size() { return buf_size; }
+	ByteBuffer();
+	virtual ~ByteBuffer();
+
+	size_t reserve(size_t n);
+	size_t resize(size_t n);
+	ssize_t push(void *dest, size_t n);
+	ssize_t pop(void *dest, size_t n);
+	void clear() { pos = 0; len = 0; }
+	size_t size() { return len; }
 	uint8_t* data() {
-		assert(pos < BUFFER_SIZE);
+		assert(pos <= buffer_size);
 		return buffer+pos; }
-	size_t free_size() { return sizeof(buffer)-buf_size; }
+	size_t get_free() { return buffer_size-(pos+len); }
 
 protected:
-	uint8_t buffer[BUFFER_SIZE] = {};
-	size_t pos = 0;
-	size_t buf_size = 0;
+	uint8_t *buffer;
+	size_t buffer_size = 0;
+	ssize_t pos = 0;
+	ssize_t len = 0;
+
+	uint8_t* write_point() { return buffer+pos+len; }
+};
+
+
+class UartByteBuffer : public ByteBuffer
+{
+public:
+	UartByteBuffer(size_t size);
+	ssize_t fill();
+	void init(int fd) { _uart_fd = fd; }
+private:
+	int _uart_fd = -1;
+};
+
+
+class UdpByteBuffer : public ByteBuffer
+{
+public:
+	UdpByteBuffer(size_t size);
+	ssize_t fill();
+	void init(int fd, struct sockaddr_in *addr) { _udp_fd = fd; _inaddr = addr; }
+private:
+	int _udp_fd = -1;
+	struct sockaddr_in *_inaddr = nullptr;
 };
 
 
 class MessageData
 {
 public:
-	void set_packet_len(size_t len) {
+	MessageData()
+	{
+		buffer.reserve(1024);
+	}
+
+	void init_packet(size_t len) {
 		packet_len = len;
+		buffer.clear();
 		buffer.reserve(len);
 		buffer.resize(len);
 	}
@@ -162,7 +216,7 @@ public:
 
 	ssize_t status;
 	size_t  packet_len;
-	std::vector<uint8_t> buffer;
+	ByteBuffer buffer;
 	size_t  index;
 
 };
@@ -179,7 +233,8 @@ public:
 	int	open_uart();
 	ssize_t    read();
 	void	   write();
-	void send_msg(ReadBuffer &buffer, MessageData &msg);
+	void send_msg(ByteBuffer &buffer, MessageData &msg);
+	int        get_fd() { return _uart_fd; }
 
 protected:
 
@@ -189,9 +244,9 @@ protected:
 	int _uart_fd = -1;
 
 	char _uart_name[64] = {};
-	ReadBuffer _in_read_buffer;
+	UartByteBuffer _uart_read_buffer;
 
-	ssize_t uart_write(std::vector<uint8_t> *vect);
+	ssize_t uart_write(ByteBuffer *vect);
 
 	void parse();
 	bool baudrate_to_speed(uint32_t bauds, speed_t *speed);
@@ -211,13 +266,13 @@ public:
 	int close();
 
 	int	open_udp();
-	void send_msg(ReadBuffer &buffer, MessageData &msg);
+	void send_msg(ByteBuffer &buffer, MessageData &msg);
 	ssize_t    read();
 	void       write();
 	int        get_fd() { return _udp_fd; }
 
 protected:
-	virtual ssize_t check_msgs(ReadBuffer &buffer, MessageData &msg) = 0;
+	virtual ssize_t check_msgs(ByteBuffer &buffer, MessageData &msg) = 0;
 	virtual MessageData& get_udp_msg_handler() = 0;;
 
 protected:
@@ -228,17 +283,17 @@ protected:
 	uint16_t _udp_port_send;
 	struct sockaddr_in _outaddr;
 	struct sockaddr_in _inaddr;
-	ReadBuffer _udp_read_buffer;
+	UdpByteBuffer _udp_read_buffer;
 
 	ssize_t _msg_parse_status = STATUS_NOT_FOUND;
 	size_t  _msg_packet_len = 0;
 
-	std::vector<uint8_t> *_msg_receive_buffer = nullptr;
+	//ByteBuffer *_msg_receive_buffer = nullptr;
 	size_t  _msg_receive_index = 0;
 
 	void parse();
 	ssize_t udp_read();
-	ssize_t udp_write(std::vector<uint8_t> *vect);
+	ssize_t udp_write(ByteBuffer *vect);
 
 private:
 
@@ -252,7 +307,7 @@ public:
 	            const uint16_t udp_port_send);
 	virtual ~Mavlink2Dev() {}
 
-	ssize_t check_msgs(ReadBuffer &buffer, MessageData &msg);
+	ssize_t check_msgs(ByteBuffer &buffer, MessageData &msg);
 	MessageData& get_uart_msg_handler() { return _uart_msg; }
 
 protected:
@@ -269,7 +324,7 @@ public:
 	        const uint16_t udp_port_send);
 	virtual ~RtpsDev() {}
 
-	ssize_t check_msgs(ReadBuffer &buffer, MessageData &msg);
+	ssize_t check_msgs(ByteBuffer &buffer, MessageData &msg);
 	MessageData& get_uart_msg_handler() { return _uart_msg; }
 
 protected:
