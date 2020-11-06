@@ -164,10 +164,10 @@ class UdpByteBuffer : public ByteBuffer
 public:
 	UdpByteBuffer(size_t size);
 	ssize_t fill();
-	void init(int fd, struct sockaddr_in *addr) { _udp_fd = fd; _inaddr = addr; }
+	void init(int fd, struct sockaddr_in *addr) { _udp_fd = fd; _outaddr = addr; }
 private:
 	int _udp_fd = -1;
-	struct sockaddr_in *_inaddr = nullptr;
+	struct sockaddr_in *_outaddr = nullptr;
 };
 
 
@@ -257,7 +257,8 @@ class DevSocket
 public:
 	DevSocket(const char *udp_ip,
 	          const uint16_t udp_port_recv,
-	          const uint16_t udp_port_send);
+	          const uint16_t udp_port_send,
+	          const bool server);
 	virtual ~DevSocket();
 
 	int close();
@@ -281,6 +282,7 @@ protected:
 	struct sockaddr_in _outaddr;
 	struct sockaddr_in _inaddr;
 	UdpByteBuffer _udp_read_buffer;
+	bool _server;
 
 	ssize_t _msg_parse_status = STATUS_NOT_FOUND;
 	size_t  _msg_packet_len = 0;
