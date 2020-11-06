@@ -161,8 +161,14 @@ ssize_t UdpByteBuffer::fill()
 		pos = 0;
 	}
 	DEBUG_UDP_TO_UART_PRINT(("udp fill: free %ld\n", get_free()));
-	static socklen_t addrlen = sizeof(_inaddr);
-	ssize_t r = recvfrom(_udp_fd, write_point(), get_free(), 0, (struct sockaddr *) &_inaddr, &addrlen);
+	ssize_t r;
+	if (!_outaddr) {
+		r = recv(_udp_fd, write_point(), get_free(), 0);
+	} else {
+		static socklen_t addrlen = sizeof(*_outaddr);
+		r = recvfrom(_udp_fd, write_point(), get_free(), 0, (struct sockaddr *) _outaddr, &addrlen);
+	}
+
 	if (r > 0)
 		len += r;
 	return r;
@@ -543,9 +549,11 @@ int DevSerial::close()
 
 DevSocket::DevSocket(const char *udp_ip,
                      const uint16_t udp_port_recv,
-                     const uint16_t udp_port_send)
+                     const uint16_t udp_port_send,
+                     const bool server)
 	: _udp_port_recv(udp_port_recv)
 	, _udp_port_send(udp_port_send)
+	, _server(server)
 	, _udp_read_buffer(BUFFER_SIZE)
 {
 	if (nullptr != udp_ip) {
@@ -553,7 +561,10 @@ DevSocket::DevSocket(const char *udp_ip,
 	}
 
 	if (!open_udp())
-		_udp_read_buffer.init(_udp_fd, &_inaddr);
+		if (server)
+			_udp_read_buffer.init(_udp_fd, &_outaddr);
+		else
+			_udp_read_buffer.init(_udp_fd, NULL);
 }
 
 DevSocket::~DevSocket()
@@ -587,7 +598,10 @@ int DevSocket::open_udp()
 		return -1;
 	}
 
-	printf("[ protocol__splitter ]\tUDP socket link: Connected to server!\n");
+	if (_server)
+		printf("[ protocol__splitter ]\tUDP socket link: Server initialized!\n");
+	else
+		printf("[ protocol__splitter ]\tUDP socket link: Connected to server!\n");
 
 	if (inet_aton(_udp_ip, &_outaddr.sin_addr) == 0) {
 		printf("\033[0;31m[ protocol__splitter ]\tUDP socket link: inet_aton() failed\033[0m\n");
@@ -717,7 +731,7 @@ int DevSocket::close()
 Mavlink2Dev::Mavlink2Dev(const char *udp_ip,
                          const uint16_t udp_port_recv,
                          const uint16_t udp_port_send)
-	: DevSocket(udp_ip, udp_port_recv, udp_port_send)
+	: DevSocket(udp_ip, udp_port_recv, udp_port_send, true)
 {
 	_udp_msg.clear();
 	_uart_msg.clear();
@@ -784,7 +798,7 @@ ssize_t Mavlink2Dev::check_msgs(ByteBuffer &buffer, MessageData &msg)
 RtpsDev::RtpsDev(const char *udp_ip,
                  const uint16_t udp_port_recv,
                  const uint16_t udp_port_send)
-	: DevSocket(udp_ip, udp_port_recv, udp_port_send)
+	: DevSocket(udp_ip, udp_port_recv, udp_port_send,false)
 {
 	_udp_msg.clear();
 	_uart_msg.clear();
