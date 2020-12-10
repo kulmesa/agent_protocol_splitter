@@ -8,6 +8,8 @@ microRTPS/DDS agent protocol splitter. Allows to stream and parse MAVLink and RT
 ## Build
 
 ```sh
+mkdir build
+cd build
 cmake ..
 make
 ```
