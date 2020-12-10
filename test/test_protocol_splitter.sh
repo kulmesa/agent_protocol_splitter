@@ -1,4 +1,3 @@
-#open QGroundcontrol connection with 'Target Host: 127.0.0.1:5800'
 #start PX4 + Gazebo: make px4_sitl_rtps gazebo_solo
 
 echo "Test protocol splitter"
@@ -30,6 +29,3 @@ read -r -d '' _ </dev/tty
 
 kill px4_pid
 kill ros_pid
-
-#echo "start Mavlink message listener - ROS2 end"
-#./mav_reader.py --ip 127.0.0.1 --port 12345
