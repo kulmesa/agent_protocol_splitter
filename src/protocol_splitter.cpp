@@ -136,8 +136,10 @@ ssize_t UartByteBuffer::fill()
 	}
 	DEBUG_UART_TO_UDP_PRINT(("UartByteBuffer::fill pos:%ld, len=%ld, _uart_fd:%d\n", pos, len, _uart_fd));
 	ssize_t r = ::read(_uart_fd, write_point(), get_free() );
-	if (r > 0)
+	if (r > 0) {
+		objects->stats.uart_in += r;
 		len += r;
+	}
 	return r;
 }
 
@@ -166,8 +168,10 @@ ssize_t UdpByteBuffer::fill()
 		r = recvfrom(_udp_fd, write_point(), get_free(), 0, (struct sockaddr *) _outaddr, &addrlen);
 	}
 
-	if (r > 0)
+	if (r > 0) {
+		objects->stats.uart_in += r;
 		len += r;
+	}
 	return r;
 }
 
@@ -216,6 +220,7 @@ ssize_t DevSerial::uart_write(ByteBuffer *vect)
 	int ret = 0;
 	DEBUG_UDP_TO_UART_PRINT(("uart_write: len: %ld\n", vect->size()));
 	ret = ::write(_uart_fd, vect->data(), vect->size());
+	objects->stats.uart_out++;
 	vect->clear();
 	return ret;
 }
@@ -838,6 +843,13 @@ ssize_t RtpsDev::check_msgs(ByteBuffer &buffer, MessageData &msg)
 /*********************************************************************
  * Poll & Signal handlers
  *********************************************************************/
+void show_stats(int signum)
+{
+	printf("[ protocol__splitter ]\tStats:\tIN\tOUT\n");
+	printf("[ protocol__splitter ]\t UART\t%d\t%d\n", objects->stats.uart_in, objects->stats.uart_out);
+	printf("[ protocol__splitter ]\t MAV\t%d\t%d\n", objects->stats.mav_in, objects->stats.mav_out);
+	printf("[ protocol__splitter ]\t RTPS\t%d\t%d\n\n", objects->stats.rtps_in, objects->stats.rtps_out);
+}
 
 void signal_handler(int signum)
 {
@@ -947,6 +959,7 @@ int main(int argc, char *argv[])
 	objects = new StaticData();
 
 	std::signal(SIGINT, signal_handler);
+	std::signal(SIGUSR1, show_stats);
 
 	// Init the serial device
 	objects->serial = new DevSerial(

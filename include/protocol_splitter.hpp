@@ -83,10 +83,20 @@ class Mavlink2Dev;
 class RtpsDev;
 class ByteBuffer;
 
+struct statistics {
+	uint32_t uart_in;
+	uint32_t uart_out;
+	uint32_t mav_in;
+	uint32_t mav_out;
+	uint32_t rtps_in;
+	uint32_t rtps_out;
+};
+
 struct StaticData {
 	DevSerial *serial;
 	Mavlink2Dev *mavlink2;
 	RtpsDev *rtps;
+	struct statistics stats;
 };
 
 volatile sig_atomic_t running = true;
