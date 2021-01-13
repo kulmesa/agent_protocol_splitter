@@ -655,7 +655,7 @@ int main(int argc, char *argv[])
 
 	// Init the serial device
 	// TODO: add arg options to set the dev name, baudrate, etc.
-	objects->serial = new DevSerial("/dev/ttyUSB0", 3000000);
+	objects->serial = new DevSerial("/dev/ttyUSB0", 921600);
 	int uart_fd = objects->serial->open_uart();
 
 	// Init UDP sockets for Mavlink and RTPS
