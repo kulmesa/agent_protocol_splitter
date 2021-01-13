@@ -482,11 +482,11 @@ ssize_t Mavlink2Dev::write()
 	size_t buflen = sizeof(buffer);
 
 	// Read from UDP port
-	ssize_t ret = udp_read((void *)buffer, buflen);
+	ssize_t len = udp_read((void *)buffer, buflen);
 
 	switch (_parser_state) {
 	case ParserState::Idle:
-		assert(ret >= 3);
+		assert(len >= 3);
 
 		if ((unsigned char)buffer[0] == 253) {
 			uint8_t payload_len = buffer[1];
@@ -513,9 +513,9 @@ ssize_t Mavlink2Dev::write()
 	/* FALLTHROUGH */
 
 	case ParserState::GotLength: {
-			_packet_len -= buflen;
+			_packet_len -= len;
 
-			ret = ::write(_uart_fd, buffer, buflen);
+			len = ::write(_uart_fd, buffer, len);
 
 			if (_packet_len == 0) {
 				_parser_state = ParserState::Idle;
@@ -525,7 +525,7 @@ ssize_t Mavlink2Dev::write()
 		break;
 	}
 
-	return ret;
+	return len;
 }
 
 RtpsDev::RtpsDev(ReadBuffer *read_buffer, const char* udp_ip,
@@ -605,12 +605,11 @@ ssize_t RtpsDev::write()
 	size_t buflen = sizeof(buffer);
 
 	// Read from UDP port
-	// Read from UDP port
-	ssize_t ret = udp_read((void *)buffer, buflen);
+	ssize_t len = udp_read((void *)buffer, buflen);
 
 	switch (_parser_state) {
 	case ParserState::Idle:
-		assert(ret >= HEADER_SIZE);
+		assert(len >= HEADER_SIZE);
 
 		if (memcmp(buffer, ">>>", 3) != 0) {
 			printf("\033[1;33m[ protocol__splitter ]\tParser error\033[0m\n");
@@ -626,7 +625,7 @@ ssize_t RtpsDev::write()
 	case ParserState::GotLength: {
 			_packet_len -= buflen;
 
-			ret = ::write(_uart_fd, buffer, buflen);
+			len = ::write(_uart_fd, buffer, len);
 
 			if (_packet_len == 0) {
 				_parser_state = ParserState::Idle;
@@ -636,7 +635,7 @@ ssize_t RtpsDev::write()
 		break;
 	}
 
-	return ret;
+	return len;
 }
 
 void signal_handler(int signum)
