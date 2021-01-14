@@ -470,68 +470,18 @@ ssize_t Mavlink2Dev::read()
 
 ssize_t Mavlink2Dev::write()
 {
-	std::unique_lock<std::mutex> guard(mtx);
-
-	char buffer[BUFFER_SIZE];
-	size_t buflen = sizeof(buffer);
-	uint16_t packet_len;
-
-	int i = 0;
-
-	if (_out_read_buffer->buf_size > _out_read_buffer->BUFFER_THRESHOLD) {
-		_out_read_buffer->buf_size = 0;
-	}
+	static char buffer[BUFFER_SIZE];
+	static size_t buflen = sizeof(buffer);
 
 	// Read from UDP port
-	ssize_t ret = udp_read((void *)(_out_read_buffer->buffer + _out_read_buffer->buf_size),
-			       sizeof(_out_read_buffer->buffer) - _out_read_buffer->buf_size);
+	ssize_t ret = udp_read((void *)(buffer), buflen);
 
 	if (ret < 0) {
 		return ret;
 	}
 
-	_out_read_buffer->buf_size += ret;
-
-	size_t len = 0;
-
-	while (_out_read_buffer->buf_size >= 3) {
-		while ((unsigned)i < (_out_read_buffer->buf_size - 3)
-		       && _out_read_buffer->buffer[i] != 253
-		       && _out_read_buffer->buffer[i] != 254) {
-			i++;
-		}
-
-		// We need at least the first three bytes to get packet len
-		if ((unsigned)i >= _out_read_buffer->buf_size - 3) {
-			break;
-		}
-
-		if (_out_read_buffer->buffer[i] == 253) {
-			uint8_t payload_len = _out_read_buffer->buffer[i + 1];
-			uint8_t incompat_flags = _out_read_buffer->buffer[i + 2];
-			packet_len = payload_len + 12;
-
-			if (incompat_flags & 0x1) { //signing
-				packet_len += 13;
-			}
-
-		} else {
-			packet_len = _out_read_buffer->buffer[i + 1] + 8;
-		}
-
-		// packet is bigger than what we've read, better luck next time
-		if ((unsigned)i + packet_len > _out_read_buffer->buf_size) {
-			ret = -EMSGSIZE;
-			break;
-		}
-
-		_out_read_buffer->move(buffer, i, packet_len);
-
-		i = 0;
-		buflen += sizeof(buffer);
-		ret = ::write(_uart_fd, buffer, buflen);
-	}
-
+	std::unique_lock<std::mutex> guard(mtx);
+	ret = ::write(_uart_fd, buffer, ret);
 	guard.unlock();
 
 	return ret;
