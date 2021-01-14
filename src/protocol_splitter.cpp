@@ -456,11 +456,10 @@ ssize_t Mavlink2Dev::read()
 		_in_read_buffer->move(buffer, i, packet_len);
 
 		// Write to UDP port
-		udp_write(buffer, buflen);
+		udp_write(buffer, packet_len);
 
 		ret += packet_len;
 
-		i = 0;
 	}
 
 	guard.unlock();
