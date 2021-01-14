@@ -390,13 +390,12 @@ ssize_t DevSocket::udp_write(void *buffer, size_t len)
 	return ret;
 }
 
-Mavlink2Dev::Mavlink2Dev(ReadBuffer *in_read_buffer, ReadBuffer *out_read_buffer, const char *udp_ip,
+Mavlink2Dev::Mavlink2Dev(ReadBuffer *in_read_buffer, const char *udp_ip,
 			 const uint16_t udp_port_recv,
 			 const uint16_t udp_port_send,
 			 int uart_fd)
 	: DevSocket(udp_ip, udp_port_recv, udp_port_send, uart_fd)
 	, _in_read_buffer{in_read_buffer}
-	, _out_read_buffer{out_read_buffer}
 {
 }
 
@@ -476,12 +475,11 @@ ssize_t Mavlink2Dev::write()
 	return ret;
 }
 
-RtpsDev::RtpsDev(ReadBuffer *in_read_buffer, ReadBuffer *out_read_buffer, const char *udp_ip,
+RtpsDev::RtpsDev(ReadBuffer *in_read_buffer, const char *udp_ip,
 		 const uint16_t udp_port_recv, const uint16_t udp_port_send,
 		 int uart_fd)
 	: DevSocket(udp_ip, udp_port_recv, udp_port_send, uart_fd)
 	, _in_read_buffer{in_read_buffer}
-	, _out_read_buffer{out_read_buffer}
 {
 }
 
@@ -505,9 +503,6 @@ ssize_t RtpsDev::read()
 
 		// We need at least the first six bytes to get packet len
 		if ((unsigned)i > _in_read_buffer->buf_size - HEADER_SIZE) {
-			_in_read_buffer->move(_in_read_buffer->buffer, (size_t)(_in_read_buffer->buffer + i),
-					      _in_read_buffer->buf_size - (unsigned)i);
-			_in_read_buffer->buf_size -= (unsigned)i;
 			ret = -1;
 			break;
 		}
@@ -517,15 +512,7 @@ ssize_t RtpsDev::read()
 
 		// packet is bigger than what we've read, better luck next time
 		if ((unsigned)i + packet_len > _in_read_buffer->buf_size) {
-			break;
-		}
-
-		// The message won't fit the buffer.
-		if (packet_len > buflen) {
-			_in_read_buffer->move(_in_read_buffer->buffer, (size_t)(_in_read_buffer->buffer + i + 1),
-					      _in_read_buffer->buf_size - (unsigned)(i + 1));
-			_in_read_buffer->buf_size -= (unsigned)(i + 1);
-			ret = -EMSGSIZE;
+			ret = -1;
 			break;
 		}
 
@@ -669,8 +656,6 @@ int main(int argc, char *argv[])
 
 	// Init the read buffer
 	objects->in_read_buffer = new ReadBuffer();
-	objects->mavlink_out_read_buffer = new ReadBuffer();
-	objects->rtps_out_read_buffer = new ReadBuffer();
 
 	// Init the serial device
 	objects->serial = new DevSerial(_options.uart_device, _options.baudrate, _options.hw_flow_control,
@@ -679,9 +664,9 @@ int main(int argc, char *argv[])
 
 	// Init UDP sockets for Mavlink and RTPS
 	objects->mavlink2 = new Mavlink2Dev(objects->in_read_buffer,
-					    objects->mavlink_out_read_buffer, _options.host_ip, _options.mavlink_udp_recv_port, _options.mavlink_udp_send_port, uart_fd);
+					_options.host_ip, _options.mavlink_udp_recv_port, _options.mavlink_udp_send_port, uart_fd);
 	objects->rtps = new RtpsDev(objects->in_read_buffer,
-				    objects->rtps_out_read_buffer, _options.host_ip, _options.rtps_udp_recv_port, _options.rtps_udp_send_port, uart_fd);
+					_options.host_ip, _options.rtps_udp_recv_port, _options.rtps_udp_send_port, uart_fd);
 
 	// Init fd polling
 	pollfd fd_uart[1]{};
@@ -711,8 +696,6 @@ int main(int argc, char *argv[])
 	delete objects->mavlink2;
 	delete objects->rtps;
 	delete objects->in_read_buffer;
-	delete objects->mavlink_out_read_buffer;
-	delete objects->rtps_out_read_buffer;
 	delete objects;
 	objects = nullptr;
 
