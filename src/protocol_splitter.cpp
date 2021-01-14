@@ -404,23 +404,13 @@ ssize_t Mavlink2Dev::read()
 {
 	std::unique_lock<std::mutex> guard(mtx);
 
-	int i, ret;
+	int i = 0, ret = 0;
 	uint16_t packet_len = 0;
 
 	char buffer[BUFFER_SIZE];
 	size_t buflen = sizeof(buffer);
 
-	ret = _in_read_buffer->read(_uart_fd);
-
-	if (ret < 0) {
-		guard.unlock();
-		return ret;
-	}
-
-	ret = 0;
-
 	// Search for a mavlink packet on buffer to send it
-	i = 0;
 
 	while (_in_read_buffer->buf_size >= 3) {
 		while ((unsigned)i < (_in_read_buffer->buf_size - 3)
@@ -499,23 +489,13 @@ ssize_t RtpsDev::read()
 {
 	std::unique_lock<std::mutex> guard(mtx);
 
-	int i, ret;
+	int i = 0, ret = 0;
 	uint16_t packet_len, payload_len;
 
 	char buffer[BUFFER_SIZE];
 	size_t buflen = sizeof(buffer);
 
-	ret = _in_read_buffer->read(_uart_fd);
-
-	if (ret < 0) {
-		guard.unlock();
-		return ret;
-	}
-
-	ret = 0;
-
 	// Search for a rtps packet on buffer to send it
-	i = 0;
 
 	while (_in_read_buffer->buf_size >= HEADER_SIZE) {
 		while ((unsigned)i < (_in_read_buffer->buf_size - HEADER_SIZE)
@@ -588,20 +568,15 @@ void signal_handler(int signum)
 	running = false;
 }
 
-void mavlink_serial_to_udp(pollfd *fds)
+void serial_to_udp(pollfd *fds)
 {
 	while (running) {
 		if ((::poll(fds, sizeof(fds) / sizeof(fds[0]), 100) > 0) && (fds[0].revents & POLLIN)) {
-			objects->mavlink2->read();
-		}
-	}
-}
-
-void rtps_serial_to_udp(pollfd *fds)
-{
-	while (running) {
-		if ((::poll(fds, sizeof(fds) / sizeof(fds[0]), 100) > 0) && (fds[0].revents & POLLIN)) {
-			objects->rtps->read();
+			int len = objects->in_read_buffer->read(fds[0].fd);
+			if (len) {
+				objects->rtps->read();
+				objects->mavlink2->read();
+			}
 		}
 	}
 }
@@ -724,13 +699,11 @@ int main(int argc, char *argv[])
 
 	running = true;
 
-	std::thread rtps_serial_to_udp_th(rtps_serial_to_udp, fd_uart);
-	std::thread mavlink_serial_to_udp_th(mavlink_serial_to_udp, fd_uart);
+	std::thread serial_to_udp_th(serial_to_udp, fd_uart);
 	std::thread rtps_udp_to_serial_th(rtps_udp_to_serial, fds_udp_rtps);
 	std::thread mavlink_udp_to_serial_th(mavlink_udp_to_serial, fds_udp_mavlink);
 
-	mavlink_serial_to_udp_th.join();
-	rtps_serial_to_udp_th.join();
+	serial_to_udp_th.join();
 	mavlink_udp_to_serial_th.join();
 	rtps_udp_to_serial_th.join();
 
