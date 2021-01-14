@@ -410,24 +410,6 @@ ssize_t Mavlink2Dev::read()
 	char buffer[BUFFER_SIZE];
 	size_t buflen = sizeof(buffer);
 
-	/* last reading was partial (i.e., buffer didn't fit whole message),
-	 * so now we'll just send remaining bytes */
-	if (_remaining_partial > 0) {
-		size_t len = _remaining_partial;
-
-		if (buflen < len) {
-			len = buflen;
-		}
-
-		memmove(buffer, _partial_buffer + _partial_start, len);
-		_partial_start += len;
-		_remaining_partial -= len;
-
-		if (_remaining_partial == 0) {
-			_partial_start = 0;
-		}
-	}
-
 	ret = _in_read_buffer->read(_uart_fd);
 
 	if (ret < 0) {
@@ -468,16 +450,6 @@ ssize_t Mavlink2Dev::read()
 		// packet is bigger than what we've read, better luck next time
 		if ((unsigned)i + packet_len > _in_read_buffer->buf_size) {
 			ret = -EMSGSIZE;
-			break;
-		}
-
-		/* if buffer doesn't fit message, send what's possible and copy remaining
-		 * data into a temporary buffer on this class */
-		if (packet_len > buflen) {
-			_in_read_buffer->move(buffer, i, buflen);
-			_in_read_buffer->move(_partial_buffer, i, packet_len - buflen);
-			_remaining_partial = packet_len - buflen;
-			ret = buflen;
 			break;
 		}
 
@@ -522,24 +494,6 @@ ssize_t Mavlink2Dev::write()
 
 	size_t len = 0;
 
-	/* last reading was partial (i.e., buffer didn't fit whole message),
-	 * so now we'll just send remaining bytes */
-	if (_remaining_partial > 0) {
-		len = _remaining_partial;
-
-		if (buflen < len) {
-			len = buflen;
-		}
-
-		memmove(buffer, _partial_buffer + _partial_start, len);
-		_partial_start += len;
-		_remaining_partial -= len;
-
-		if (_remaining_partial == 0) {
-			_partial_start = 0;
-		}
-	}
-
 	while (_out_read_buffer->buf_size >= 3) {
 		while ((unsigned)i < (_out_read_buffer->buf_size - 3)
 		       && _out_read_buffer->buffer[i] != 253
@@ -568,16 +522,6 @@ ssize_t Mavlink2Dev::write()
 		// packet is bigger than what we've read, better luck next time
 		if ((unsigned)i + packet_len > _out_read_buffer->buf_size) {
 			ret = -EMSGSIZE;
-			break;
-		}
-
-		/* if buffer doesn't fit message, send what's possible and copy remaining
-		 * data into a temporary buffer on this class */
-		if (packet_len > buflen) {
-			_out_read_buffer->move(buffer, i, buflen);
-			_out_read_buffer->move(_partial_buffer, i, packet_len - buflen);
-			_remaining_partial = packet_len - buflen;
-			ret = buflen;
 			break;
 		}
 

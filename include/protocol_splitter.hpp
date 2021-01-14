@@ -161,9 +161,6 @@ public:
 protected:
 	ReadBuffer *_in_read_buffer;
 	ReadBuffer *_out_read_buffer;
-	size_t _remaining_partial = 0;
-	size_t _partial_start = 0;
-	uint8_t _partial_buffer[BUFFER_SIZE] = {};
 };
 
 class RtpsDev : public DevSocket
