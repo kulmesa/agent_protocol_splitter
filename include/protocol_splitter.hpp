@@ -61,8 +61,6 @@ struct StaticData {
 	Mavlink2Dev *mavlink2;
 	RtpsDev *rtps;
 	ReadBuffer *in_read_buffer;
-	ReadBuffer *mavlink_out_read_buffer;
-	ReadBuffer *rtps_out_read_buffer;
 };
 
 volatile sig_atomic_t running = true;
@@ -150,7 +148,7 @@ private:
 class Mavlink2Dev : public DevSocket
 {
 public:
-	Mavlink2Dev(ReadBuffer *in_read_buffer, ReadBuffer *out_read_buffer,
+	Mavlink2Dev(ReadBuffer *in_read_buffer,
 		    const char *udp_ip, const uint16_t udp_port_recv,
 		    const uint16_t udp_port_send, int uart_fd);
 	virtual ~Mavlink2Dev() {}
@@ -160,13 +158,12 @@ public:
 
 protected:
 	ReadBuffer *_in_read_buffer;
-	ReadBuffer *_out_read_buffer;
 };
 
 class RtpsDev : public DevSocket
 {
 public:
-	RtpsDev(ReadBuffer *in_read_buffer, ReadBuffer *out_read_buffer,
+	RtpsDev(ReadBuffer *in_read_buffer,
 		const char *udp_ip, const uint16_t udp_port_recv,
 		const uint16_t udp_port_send, int uart_fd);
 	virtual ~RtpsDev() {}
@@ -176,7 +173,6 @@ public:
 
 protected:
 	ReadBuffer *_in_read_buffer;
-	ReadBuffer *_out_read_buffer;
 
 	static const uint8_t HEADER_SIZE = 9;
 };
