@@ -567,30 +567,17 @@ ssize_t RtpsDev::read()
 
 ssize_t RtpsDev::write()
 {
-	std::unique_lock<std::mutex> guard(mtx);
-
-	uint16_t payload_len;
-	uint16_t packet_len;
-
-	char buffer[BUFFER_SIZE];
-	size_t buflen = sizeof(buffer);
-
-	if (_out_read_buffer->buf_size > _out_read_buffer->BUFFER_THRESHOLD) {
-		_out_read_buffer->buf_size = 0;
-	}
+	static char buffer[BUFFER_SIZE];
+	static size_t buflen = sizeof(buffer);
 
 	// Read from UDP port
-	ssize_t ret = udp_read((void *)(_out_read_buffer->buffer + _out_read_buffer->buf_size),
-			       sizeof(_out_read_buffer->buffer) - _out_read_buffer->buf_size);
+	ssize_t ret = udp_read((void *)(buffer), buflen);
 
 	if (ret < 0) {
-		guard.unlock();
 		return ret;
 	}
 
-	_out_read_buffer->buf_size += ret;
-	_out_read_buffer->move(buffer, 0, _out_read_buffer->buf_size);
-
+	std::unique_lock<std::mutex> guard(mtx);
 	ret = ::write(_uart_fd, buffer, ret);
 	guard.unlock();
 
