@@ -374,8 +374,12 @@ ssize_t DevSocket::udp_read(void *buffer, size_t len)
 	}
 
 	int ret = 0;
-	static socklen_t addrlen = sizeof(_inaddr);
-	ret = recvfrom(_udp_fd, buffer, len, 0, (struct sockaddr *) &_inaddr, &addrlen);
+	static socklen_t addrlen = sizeof(_outaddr);
+	if (ntohs(_outaddr.sin_port) == 0) {
+		ret = recvfrom(_udp_fd, buffer, len, 0, (struct sockaddr *) &_outaddr, &addrlen);
+	} else {
+		ret = recv(_udp_fd, buffer, len, 0);
+	}
 	return ret;
 }
 
@@ -592,12 +596,16 @@ static void usage(const char *name)
 	       "  -b <baudrate>			UART device baudrate. Default 460800\n"
 	       "  -d <uart_device>		UART device. Default /dev/ttyUSB0\n"
 	       "  -i <host_ip>			Host IP for UDP. Default 127.0.0.1\n"
-	       "  -w <mavlink_udp_recv_port>	UDP port for receiving. Default 5800\n"
-	       "  -x <mavlink_udp_send_port>	UDP port for receiving. Default 5801\n"
-	       "  -y <rtps_udp_recv_port>	UDP port for receiving. Default 5900\n"
+	       "  -w <mavlink_udp_recv_port>	UDP port for receiving. Default 5800.\n"
+	       "                            	 Set 0 to autoselect.\n"
+	       "  -x <mavlink_udp_send_port>	UDP port for receiving. Default 5801.\n"
+	       "                            	 Set 0 to get source port.\n"
+	       "  -y <rtps_udp_recv_port>	UDP port for receiving. Default 5900.\n"
+	       "                         	 Set 0 to autoselect.\n"
 	       "  -z <rtps_udp_send_port>	UDP port for receiving. Default 5901\n"
+	       "                         	 Set 0 to get source port.\n"
 	       "  -f <sw_flow_control>		Activates UART link SW flow control\n"
-	       "  -h <hw_flow_control>		Activates UART link HW flow control\n"
+	       "  -g <hw_flow_control>		Activates UART link HW flow control\n"
 	       "  -v <verbose_debug>		Add more verbosity\n\n",
 	       name);
 }
