@@ -472,6 +472,13 @@ ssize_t Mavlink2Dev::write()
 		return ret;
 	}
 
+	if ((ret < 3) ||	// Check there is enough data for message
+		((uint8_t)buffer[0] != 253 &&
+		 (uint8_t)buffer[0] != 254)) // Check there is valid header byte
+	{
+		return 0;
+	}
+
 	std::unique_lock<std::mutex> guard(mtx);
 	ret = ::write(_uart_fd, buffer, ret);
 	guard.unlock();
@@ -544,6 +551,15 @@ ssize_t RtpsDev::write()
 
 	if (ret < 0) {
 		return ret;
+	}
+
+	if ((ret < 6) ||	// Check there is enough data for message
+		(buffer[0] != '>' ||
+		 buffer[1] != '>' ||
+		 buffer[2] != '>') || // Check there is valid header
+		( ((uint16_t)(buffer[5] << 8) | buffer[6])) > buflen ) // Check the message fits into buffer
+	{
+		return 0;
 	}
 
 	std::unique_lock<std::mutex> guard(mtx);
