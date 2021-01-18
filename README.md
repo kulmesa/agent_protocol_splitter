@@ -1,7 +1,9 @@
 <img align="right" height="20" src="https://auterion.com/wp-content/uploads/2020/05/auterion_logo_default_sunrise.svg">
 
 # agent_protocol_splitter
-[![GitHub](https://img.shields.io/github/license/Auterion/agent_protocol_splitter?style=for-the-badge)](https://github.com/Auterion/agent_protocol_splitter/blob/master/LICENSE)
+[![Licence](https://img.shields.io/github/license/Auterion/agent_protocol_splitter)](https://github.com/Auterion/agent_protocol_splitter/blob/master/LICENSE)
+[![Build in Ubuntu](https://github.com/Auterion/agent_protocol_splitter/workflows/Build%20in%20Ubuntu/badge.svg?branch=master)](https://github.com/Auterion/agent_protocol_splitter/actions?query=workflow%3A%22Build+in+Ubuntu%22)
+[![Build in MacOS](https://github.com/Auterion/agent_protocol_splitter/workflows/Build%20in%20MacOS/badge.svg?branch=master)](https://github.com/Auterion/agent_protocol_splitter/actions?query=workflow%3A%22Build+in+MacOS%22)
 
 microRTPS/DDS agent protocol splitter. Allows to stream and parse MAVLink and RTPS packets in the same serial link.
 
