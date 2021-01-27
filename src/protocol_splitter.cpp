@@ -218,7 +218,9 @@ ssize_t DevSerial::uart_write(ByteBuffer *vect)
 
 	int ret = 0;
 	DEBUG_UDP_TO_UART_PRINT(("uart_write: len: %ld\n", vect->size()));
+	std::unique_lock<std::mutex> guard(mtx);
 	ret = ::write(_uart_fd, vect->data(), vect->size());
+	guard.unlock();
 	vect->clear();
 	return ret;
 }
