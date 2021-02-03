@@ -52,15 +52,26 @@
 #define DEFAULT_RTPS_SEND_PORT 5901
 
 class DevSerial;
-class Mavlink2Dev;
-class RtpsDev;
-class ReadBuffer;
+class DevSocket;
 
 struct StaticData {
 	DevSerial *serial;
-	Mavlink2Dev *mavlink2;
-	RtpsDev *rtps;
-	ReadBuffer *in_read_buffer;
+	DevSocket *mavlink2;
+	DevSocket *rtps;
+};
+
+/*
+struct Sp2Header {
+	char magic[3];
+	uint8_t type;
+	uint16_t payload_len;
+	uint16_t reserved (align)
+}
+*/
+
+enum MessageType {
+	Mavlink = 0,
+	Rtps
 };
 
 volatile sig_atomic_t running = true;
@@ -81,19 +92,12 @@ struct options {
 namespace
 {
 static StaticData *objects = nullptr;
+
+const char* Sp2HeaderMagic = "SP2";
+const int   Sp2HeaderSize  = 8;
+
 }
 
-class ReadBuffer
-{
-public:
-	int read(int fd);
-	void move(void *dest, size_t pos, size_t n);
-
-	uint8_t buffer[BUFFER_SIZE] = {};
-	size_t buf_size = 0;
-
-	static const size_t BUFFER_THRESHOLD = sizeof(buffer) * 0.8;
-};
 
 class DevSerial
 {
@@ -102,6 +106,7 @@ public:
 		  const bool sw_flow_control);
 	virtual ~DevSerial();
 
+	ssize_t	read();
 	int	open_uart();
 	int	close();
 
@@ -115,6 +120,8 @@ protected:
 	char _uart_name[64] = {};
 	bool baudrate_to_speed(uint32_t bauds, speed_t *speed);
 
+	uint8_t _buffer[BUFFER_SIZE] = {};
+	size_t _buf_size = 0;
 private:
 };
 
@@ -122,19 +129,20 @@ class DevSocket
 {
 public:
 	DevSocket(const char *_udp_ip, const uint16_t udp_port_recv,
-		  const uint16_t udp_port_send, int uart_fd);
+		  const uint16_t udp_port_send, int uart_fd, MessageType type);
 	virtual ~DevSocket();
 
 	int close(int udp_fd);
-
+	ssize_t	write();
 	int	open_udp();
-	ssize_t udp_read(void *buffer, size_t len);
 	ssize_t udp_write(void *buffer, size_t len);
 
 	int _uart_fd;
 	int _udp_fd;
 
 protected:
+
+	MessageType _type;
 	char _udp_ip[16] = {};
 
 	uint16_t _udp_port_recv;
@@ -142,37 +150,9 @@ protected:
 	struct sockaddr_in _outaddr;
 	struct sockaddr_in _inaddr;
 
+	char _buffer[BUFFER_SIZE];
+
 private:
-};
+	ssize_t udp_read(void *buffer, size_t len);
 
-class Mavlink2Dev : public DevSocket
-{
-public:
-	Mavlink2Dev(ReadBuffer *in_read_buffer,
-		    const char *udp_ip, const uint16_t udp_port_recv,
-		    const uint16_t udp_port_send, int uart_fd);
-	virtual ~Mavlink2Dev() {}
-
-	ssize_t	read();
-	ssize_t	write();
-
-protected:
-	ReadBuffer *_in_read_buffer;
-};
-
-class RtpsDev : public DevSocket
-{
-public:
-	RtpsDev(ReadBuffer *in_read_buffer,
-		const char *udp_ip, const uint16_t udp_port_recv,
-		const uint16_t udp_port_send, int uart_fd);
-	virtual ~RtpsDev() {}
-
-	ssize_t	read();
-	ssize_t	write();
-
-protected:
-	ReadBuffer *_in_read_buffer;
-
-	static const uint8_t HEADER_SIZE = 9;
 };

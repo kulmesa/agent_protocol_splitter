@@ -38,36 +38,6 @@
 
 std::mutex mtx;
 
-int ReadBuffer::read(int fd)
-{
-	/* Discard whole buffer if it's filled beyond a threshold,
-	 * This should prevent buffer being filled by garbage that
-	 * no reader (MAVLink or RTPS) can understand.
-	 */
-	if (buf_size > BUFFER_THRESHOLD) {
-		buf_size = 0;
-	}
-
-	int r = ::read(fd, buffer + buf_size, sizeof(buffer) - buf_size);
-
-	if (r < 0) {
-		return r;
-	}
-
-	buf_size += r;
-
-	return r;
-}
-
-void ReadBuffer::move(void *dest, size_t pos, size_t n)
-{
-	assert(pos < buf_size);
-	assert(pos + n <= buf_size);
-
-	memmove(dest, buffer + pos, n); // send desired data
-	memmove(buffer + pos, buffer + (pos + n), sizeof(buffer) - pos - n);
-	buf_size -= n;
-}
 
 DevSerial::DevSerial(const char *device_name, const uint32_t baudrate, const bool hw_flow_control,
 		     const bool sw_flow_control)
@@ -293,12 +263,77 @@ int DevSerial::close()
 	return 0;
 }
 
+ssize_t DevSerial::read()
+{
+	int ret = 0;
+	size_t i = 0;
+	uint16_t packet_len, payload_len;
+	uint8_t type;
+
+	ret = ::read(_uart_fd, _buffer + _buf_size, BUFFER_SIZE - _buf_size);
+	if (ret <= 0)
+		return ret;
+
+	_buf_size += ret;
+
+	ret = 0;
+	// Search for a packet on buffer to send it
+	while (_buf_size - i >= Sp2HeaderSize) {
+		while (_buf_size - i >= Sp2HeaderSize
+		       && (memcmp(_buffer + i, Sp2HeaderMagic, 3 != 0))) {
+			i++;
+		}
+		// We need at least the first 8 bytes to get packet header
+		if (i > _buf_size - Sp2HeaderSize) {
+			ret = -1;
+			break;
+		}
+
+		type = _buffer[i + 3];
+		payload_len = ((uint16_t)_buffer[i + 4] << 8) | _buffer[i + 5];
+		packet_len = payload_len + Sp2HeaderSize;
+
+		// packet is bigger than what we've read, better luck next time
+		if (i + packet_len > _buf_size) {
+			ret = -1;
+			break;
+		}
+
+		// Write to UDP port
+		if (type == MessageType::Mavlink) {
+			objects->mavlink2->udp_write(_buffer+i+Sp2HeaderSize, payload_len);
+		} else if (type == MessageType::Rtps) {
+			objects->rtps->udp_write(_buffer+i+Sp2HeaderSize, payload_len);
+		} else {
+			printf("\033[0;31m[ protocol__splitter ]\tSerial link: Unknown message type %d received \033[0m\n", type);
+		}
+
+		// Jump over the handled packet
+		i += packet_len;
+		ret += packet_len;
+
+	}
+
+	if (i < _buf_size) {
+		// Last message not complete, save it
+		memmove(_buffer, _buffer + i, _buf_size - i);
+		_buf_size = _buf_size - i;
+	} else {
+		// All data handled, clean up buffer
+		_buf_size = 0;
+	}
+
+	return ret;
+}
+
+
 DevSocket::DevSocket(const char *udp_ip, const uint16_t udp_port_recv,
-		     const uint16_t udp_port_send, int uart_fd)
+		     const uint16_t udp_port_send, int uart_fd, MessageType type)
 	: _uart_fd(uart_fd)
 	, _udp_fd(-1)
 	, _udp_port_recv(udp_port_recv)
 	, _udp_port_send(udp_port_send)
+	, _type(type)
 {
 	if (nullptr != udp_ip) {
 		strcpy(_udp_ip, udp_ip);
@@ -374,7 +409,7 @@ ssize_t DevSocket::udp_read(void *buffer, size_t len)
 	}
 
 	int ret = 0;
-	static socklen_t addrlen = sizeof(_outaddr);
+	socklen_t addrlen = sizeof(_outaddr);
 	if (ntohs(_outaddr.sin_port) == 0) {
 		ret = recvfrom(_udp_fd, buffer, len, 0, (struct sockaddr *) &_outaddr, &addrlen);
 	} else {
@@ -394,180 +429,36 @@ ssize_t DevSocket::udp_write(void *buffer, size_t len)
 	return ret;
 }
 
-Mavlink2Dev::Mavlink2Dev(ReadBuffer *in_read_buffer, const char *udp_ip,
-			 const uint16_t udp_port_recv,
-			 const uint16_t udp_port_send,
-			 int uart_fd)
-	: DevSocket(udp_ip, udp_port_recv, udp_port_send, uart_fd)
-	, _in_read_buffer{in_read_buffer}
+ssize_t DevSocket::write()
 {
-}
-
-ssize_t Mavlink2Dev::read()
-{
-	std::unique_lock<std::mutex> guard(mtx);
-
-	int i = 0, ret = 0;
-	uint16_t packet_len = 0;
-
-	char buffer[BUFFER_SIZE];
-	size_t buflen = sizeof(buffer);
-
-	// Search for a mavlink packet on buffer to send it
-
-	while (_in_read_buffer->buf_size >= 3) {
-		while ((unsigned)i < (_in_read_buffer->buf_size - 3)
-		       && _in_read_buffer->buffer[i] != 253
-		       && _in_read_buffer->buffer[i] != 254) {
-			i++;
-		}
-
-		// We need at least the first three bytes to get packet len
-		if ((unsigned)i >= _in_read_buffer->buf_size - 3) {
-			break;
-		}
-
-		if (_in_read_buffer->buffer[i] == 253) {
-			uint8_t payload_len = _in_read_buffer->buffer[i + 1];
-			uint8_t incompat_flags = _in_read_buffer->buffer[i + 2];
-			packet_len = payload_len + 12;
-
-			if (incompat_flags & 0x1) { //signing
-				packet_len += 13;
-			}
-
-		} else {
-			packet_len = _in_read_buffer->buffer[i + 1] + 8;
-		}
-
-		// packet is bigger than what we've read, better luck next time
-		if ((unsigned)i + packet_len > _in_read_buffer->buf_size) {
-			ret = -EMSGSIZE;
-			break;
-		}
-
-		_in_read_buffer->move(buffer, i, packet_len);
-
-		// Write to UDP port
-		udp_write(buffer, packet_len);
-
-		ret += packet_len;
-
-	}
-
-	guard.unlock();
-
-	return ret;
-}
-
-ssize_t Mavlink2Dev::write()
-{
-	static char buffer[BUFFER_SIZE];
-	static size_t buflen = sizeof(buffer);
+	int i = 0;
+	size_t packet_len;
 
 	// Read from UDP port
-	ssize_t ret = udp_read((void *)(buffer), buflen);
+	ssize_t payload_len = udp_read((void *)(_buffer + Sp2HeaderSize), BUFFER_SIZE - Sp2HeaderSize);
 
-	if (ret < 0) {
-		return ret;
+	if (payload_len < 0) {
+		return payload_len;
 	}
 
-	if ((ret < 3) ||	// Check there is enough data for message
-		((uint8_t)buffer[0] != 253 &&
-		 (uint8_t)buffer[0] != 254)) // Check there is valid header byte
-	{
-		return 0;
-	}
 
+	memcpy(_buffer, Sp2HeaderMagic, 3);
+	_buffer[3] = (uint8_t) _type;
+	_buffer[4] = (uint8_t) ((payload_len >> 8) & 0xff);
+	_buffer[5] = (uint8_t) (payload_len & 0xff);
+	_buffer[6] = 0; // reserved
+	_buffer[7] = 0; // reserved
+
+	packet_len = payload_len + Sp2HeaderSize;
+
+	// Write to UART port
 	std::unique_lock<std::mutex> guard(mtx);
-	ret = ::write(_uart_fd, buffer, ret);
+	packet_len = ::write(_uart_fd, _buffer, packet_len);
 	guard.unlock();
 
-	return ret;
+	return packet_len;
 }
 
-RtpsDev::RtpsDev(ReadBuffer *in_read_buffer, const char *udp_ip,
-		 const uint16_t udp_port_recv, const uint16_t udp_port_send,
-		 int uart_fd)
-	: DevSocket(udp_ip, udp_port_recv, udp_port_send, uart_fd)
-	, _in_read_buffer{in_read_buffer}
-{
-}
-
-ssize_t RtpsDev::read()
-{
-	std::unique_lock<std::mutex> guard(mtx);
-
-	int i = 0, ret = 0;
-	uint16_t packet_len, payload_len;
-
-	char buffer[BUFFER_SIZE];
-	size_t buflen = sizeof(buffer);
-
-	// Search for a rtps packet on buffer to send it
-
-	while (_in_read_buffer->buf_size >= HEADER_SIZE) {
-		while ((unsigned)i < (_in_read_buffer->buf_size - HEADER_SIZE)
-		       && (memcmp(_in_read_buffer->buffer + i, ">>>", 3) != 0)) {
-			i++;
-		}
-
-		// We need at least the first six bytes to get packet len
-		if ((unsigned)i > _in_read_buffer->buf_size - HEADER_SIZE) {
-			ret = -1;
-			break;
-		}
-
-		payload_len = ((uint16_t)_in_read_buffer->buffer[i + 5] << 8) | _in_read_buffer->buffer[i + 6];
-		packet_len = payload_len + HEADER_SIZE;
-
-		// packet is bigger than what we've read, better luck next time
-		if ((unsigned)i + packet_len > _in_read_buffer->buf_size) {
-			ret = -1;
-			break;
-		}
-
-		_in_read_buffer->move(buffer, i, packet_len);
-
-		// Write to UDP port
-		udp_write(buffer, packet_len);
-
-		ret += packet_len;
-
-	}
-
-	guard.unlock();
-
-	return ret;
-}
-
-ssize_t RtpsDev::write()
-{
-	static char buffer[BUFFER_SIZE];
-	static size_t buflen = sizeof(buffer);
-
-	// Read from UDP port
-	ssize_t ret = udp_read((void *)(buffer), buflen);
-
-	if (ret < 0) {
-		return ret;
-	}
-
-	if ((ret < 6) ||	// Check there is enough data for message
-		(buffer[0] != '>' ||
-		 buffer[1] != '>' ||
-		 buffer[2] != '>') || // Check there is valid header
-		( ((uint16_t)(buffer[5] << 8) | buffer[6])) > buflen ) // Check the message fits into buffer
-	{
-		return 0;
-	}
-
-	std::unique_lock<std::mutex> guard(mtx);
-	ret = ::write(_uart_fd, buffer, ret);
-	guard.unlock();
-
-	return ret;
-}
 
 void signal_handler(int signum)
 {
@@ -579,11 +470,7 @@ void serial_to_udp(pollfd *fds)
 {
 	while (running) {
 		if ((::poll(fds, sizeof(fds) / sizeof(fds[0]), 100) > 0) && (fds[0].revents & POLLIN)) {
-			int len = objects->in_read_buffer->read(fds[0].fd);
-			if (len) {
-				objects->rtps->read();
-				objects->mavlink2->read();
-			}
+			objects->serial->read();
 		}
 	}
 }
@@ -678,19 +565,14 @@ int main(int argc, char *argv[])
 
 	std::signal(SIGINT, signal_handler);
 
-	// Init the read buffer
-	objects->in_read_buffer = new ReadBuffer();
-
 	// Init the serial device
 	objects->serial = new DevSerial(_options.uart_device, _options.baudrate, _options.hw_flow_control,
 					_options.sw_flow_control);
 	int uart_fd = objects->serial->open_uart();
 
 	// Init UDP sockets for Mavlink and RTPS
-	objects->mavlink2 = new Mavlink2Dev(objects->in_read_buffer,
-					_options.host_ip, _options.mavlink_udp_recv_port, _options.mavlink_udp_send_port, uart_fd);
-	objects->rtps = new RtpsDev(objects->in_read_buffer,
-					_options.host_ip, _options.rtps_udp_recv_port, _options.rtps_udp_send_port, uart_fd);
+	objects->mavlink2 = new DevSocket(_options.host_ip, _options.mavlink_udp_recv_port, _options.mavlink_udp_send_port, uart_fd, MessageType::Mavlink);
+	objects->rtps = new DevSocket(_options.host_ip, _options.rtps_udp_recv_port, _options.rtps_udp_send_port, uart_fd, MessageType::Rtps);
 
 	// Init fd polling
 	pollfd fd_uart[1]{};
@@ -719,7 +601,6 @@ int main(int argc, char *argv[])
 	delete objects->serial;
 	delete objects->mavlink2;
 	delete objects->rtps;
-	delete objects->in_read_buffer;
 	delete objects;
 	objects = nullptr;
 
