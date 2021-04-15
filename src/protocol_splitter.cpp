@@ -280,7 +280,7 @@ ssize_t DevSerial::read()
 	// Search for a packet on buffer to send it
 	while (_buf_size - i >= Sp2HeaderSize) {
 		while (_buf_size - i >= Sp2HeaderSize
-		       && (memcmp(_buffer + i, Sp2HeaderMagic, 3 != 0))) {
+		       && (memcmp(_buffer + i, Sp2HeaderMagic, 3) != 0)) {
 			i++;
 		}
 		// We need at least the first 8 bytes to get packet header
