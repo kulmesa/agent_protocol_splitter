@@ -62,16 +62,27 @@ struct StaticData {
 
 /*
 struct Sp2Header {
-	char magic[3];
-	uint8_t type;
-	uint16_t payload_len;
-	uint16_t reserved (align)
+	char magic;                // 'S'
+	uint8_t type:1;            // 0=MAVLINK, 1=RTPS
+	uint16_t payload_len:15;   // Length
+	uint8_t checksum;          // Sum of two above bytes
 }
-*/
 
+     bits:   1 2 3 4 5 6 7 8
+header[0] - |     Magic     |
+header[1] - |T|   LenH      |
+header[2] - |     LenL      |
+header[3] - |   Checksum    |
+
+MessageType is in MSB of header[1]
+            |
+            v
+    Mavlink 0000 0000b
+    Rtps    1000 0000b
+*/
 enum MessageType {
-	Mavlink = 0,
-	Rtps
+	Mavlink = 0x00,
+	Rtps    = 0x80
 };
 
 volatile sig_atomic_t running = true;
@@ -93,8 +104,8 @@ namespace
 {
 static StaticData *objects = nullptr;
 
-const char* Sp2HeaderMagic = "SP2";
-const int   Sp2HeaderSize  = 8;
+const char Sp2HeaderMagic = 'S';
+const int  Sp2HeaderSize  = 4;
 
 }
 
