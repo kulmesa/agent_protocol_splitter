@@ -270,9 +270,18 @@ ssize_t DevSerial::read()
 	uint16_t packet_len, payload_len;
 	uint8_t type;
 
+	if (_buf_size == BUFFER_SIZE) {
+		_buf_size = 0;
+		printf("\033[0;31m[ protocol__splitter ]\tSerial link: receive buffer overflow - Flushing\033[0m\n");
+	}
+
 	ret = ::read(_uart_fd, _buffer + _buf_size, BUFFER_SIZE - _buf_size);
-	if (ret <= 0)
+	if (ret < 0) {
+		printf("\033[0;31m[ protocol__splitter ]\tSerial link: UART receive error: %d\033[0m\n", ret);
 		return ret;
+	} else if (ret == 0) {
+		return ret;
+	}
 
 	_buf_size += ret;
 
